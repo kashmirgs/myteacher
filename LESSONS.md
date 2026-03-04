@@ -177,6 +177,88 @@ Sadece tıklanan öğeyi göndermek yerine, tüm tahtayı context olarak verip t
 
 ---
 
+## Test 6: TTS Echo Suppression + Barge-in Akışı
+
+### Problem
+TTS bittikten sonra ve barge-in sırasında, echo-kontamine ses Deepgram'a ulaşıp hayalet transcript'ler üretiyordu. Sistem ilk soruyu tekrarlıyordu veya barge-in ile sorulan yeni soru kayboluyordu.
+
+### Ne İşe Yaramadı
+
+**1. webmHeader'ı tüm STT session'ları arasında replay etmek**
+MediaRecorder'ın ilk chunk'ı (~31KB) sadece WebM format bilgisi (EBML + Tracks) değil, ilk ~250ms'lik audio verisini de içeriyordu. Bu chunk her STT restart'ta Deepgram'a replay edilince, kullanıcının orijinal konuşması tekrar transcript'e dönüyordu. 31KB'lik "header"ın büyük kısmı audio cluster idi, gerçek init segment sadece ~150 byte.
+
+**2. Client audio suppression'ı 600ms tutmak (barge-in)**
+Barge-in tetiklendiğinde `suppressAudio(600)` kullanıcının yeni konuşmasını tamamen bastırıyordu. Kısa sorular (<1sn) tamamen kayboluyordu çünkü: barge-in'i tetikleyen konuşma = bastırılan konuşma. STT restart delay (350ms) zaten echo koruması sağlarken, 600ms fazladan audio kaybına neden oluyordu.
+
+**3. Server transcript suppression'ı 1000ms tutmak (barge-in)**
+Client 600ms audio bastırıyor + STT 350ms gecikmeli başlıyorsa, audio Deepgram'a ~600ms'de ulaşıyor. İlk transcript ~900ms'de geliyor. 1000ms suppression bu transcript'i sınırda yakalıyor veya kaçırıyordu. 400ms yeterli çünkü STT restart (350ms) + echo decay zaten koruyor.
+
+**4. Gemini abort signal'ını propagate etmemek**
+`AbortController` oluşturuluyor ama `generateContentStream`'e geçilmiyordu. Barge-in'de `abort()` çağrılınca eski HTTP request devam ediyordu. Birikmiş orphan connection'lar Gemini rate-limit'ine takılıp 46 saniye gecikmeye neden oldu.
+
+**5. STT'yi TTS bitişinde anında başlatmak**
+`onEnd` callback'inde `startSTT()` anında çağrılınca, client henüz `tts_end` mesajını almamıştı. Transit'teki echo audio chunk'ları yeni Deepgram connection'a giriyordu. Client'a `suppressAudio(300)` çağırması için zaman vermek gerekiyordu.
+
+### Final Çözümün Prensipleri
+
+**WebM init segment'i audio cluster'lardan ayır:**
+İlk MediaRecorder chunk'ında Cluster element ID (`0x1F43B675`) bulunup, öncesindeki bytes (EBML + Segment + Tracks) ayrı saklanır. Replay'de sadece format metadata gönderilir, eski audio asla. 31KB → ~150 byte.
+
+**Barge-in'de "konuşmayı bastırma, echo'yu bastır" prensibi:**
+Audio suppression'ı düşür (600→150ms), STT restart delay'e (350ms) güven. Kullanıcı konuşmasının başı (150ms) echo ile kirli olsa bile, geri kalanı temiz. Browser AEC 150ms içinde adapte oluyor. Genel prensip: bastırma süresini minimumda tut, kullanıcı konuşmasını kaybetmektense küçük echo riski kabul et.
+
+**Transit echo'ya karşı STT delay (defence-in-depth):**
+TTS doğal bitişinde 3 katmanlı koruma:
+1. Server: `ttsEndSTTDelayMs = 150ms` — STT geç başlar, transit chunk'lar düşer
+2. Client: `suppressAudio(300)` — tts_end alınınca audio bastırılır
+3. Server: `ttsEndSuppressMs = 500ms` — erken transcript'ler atılır
+
+Tek katman yetersiz çünkü timing her durumda farklı (network jitter, audio buffer size, AEC adaptation süresi).
+
+**Abort signal'ı API client'a propag et:**
+`@google/genai` SDK'da `config.abortSignal` desteği var. Barge-in'de abort edilince HTTP request gerçekten cancel oluyor, orphan connection birikmiyor. Stream loop'ta da `signal.aborted` kontrolü eklenmeli (SDK her zaman anında cancel edemeyebilir).
+
+### Kritik Parametreler
+
+| Parametre | Eski | Yeni | Neden |
+|-----------|------|------|-------|
+| `suppressAudio` (barge-in, client) | 600ms | 150ms | STT delay (350ms) zaten echo koruyor; 600ms konuşmayı öldürüyordu |
+| `suppressAudio` (tts_end, client) | yok | 300ms | Transit echo chunk'ları bastır |
+| `bargeInSuppressMs` (server) | 1000ms | 400ms | Audio ~355ms'de STT'ye ulaşır, ilk transcript ~655ms'de; 400ms yeterli |
+| `ttsEndSuppressMs` (server) | yok | 500ms | Doğal TTS bitişinde echo transcript'leri bastır |
+| `ttsEndSTTDelayMs` (server) | 0 (anında) | 150ms | Client'a tts_end alıp suppressAudio çağırma süresi ver |
+| `sttRestartDelayMs` (barge-in) | 350ms | 350ms (değişmedi) | Echo decay + AEC adaptation süresi |
+| WebM header size | ~31KB (audio dahil) | ~150B (init only) | extractInitSegment ile audio cluster'lar çıkarıldı |
+| Gemini abortSignal | yok | config.abortSignal | Orphan connection birikimini önle |
+
+### Zamanlama Diyagramı
+
+```
+Barge-in akışı:
+T+0ms    : VAD → barge_in, client suppressAudio(150)
+T+5ms    : server barge_in alır, suppressTranscriptsUntil=T+405ms
+T+150ms  : client audio akmaya başlar (ama server STT henüz yok)
+T+355ms  : STT yeni Deepgram connection açar (echo 355ms sönmüş)
+T+405ms  : server transcript suppression biter
+T+655ms+ : ilk gerçek transcript → bastırılmaz → LLM'e gider
+
+Doğal TTS bitiş akışı:
+T+0ms    : onEnd → tts_end gönderilir, suppressTranscriptsUntil=T+500ms
+T+5ms    : client tts_end alır → suppressAudio(300)
+T+150ms  : scheduleSTTStart → yeni Deepgram connection
+T+305ms  : client audio akmaya başlar (echo 305ms sönmüş)
+T+500ms  : server transcript suppression biter
+T+600ms+ : ilk gerçek transcript → bastırılmaz → LLM'e gider
+```
+
+### Edge Case'ler ve Workaround'lar
+
+- **Barge-in TTS bitişiyle çakışma:** Kullanıcı TTS'in son anında konuşursa, TTS doğal biter (onEnd) ve barge_in mesajı `state=listening`'de gelir → ignored. Bu durumda onEnd path'inin koruma katmanları devreye girer. Ayrı barge-in koruması gerekmez.
+- **Deepgram transcriptBuffer sınır aşımı:** Server'da transcript suppressed olsa bile Deepgram servisinin `transcriptBuffer`'ı birikmeye devam eder. STT restart'ta `teardown()` buffer'ı temizler. Doğal TTS bitişinde ise ttsEndSTTDelayMs sayesinde transit echo düşer, buffer temiz başlar.
+- **MediaRecorder chunk timing:** Chunk'lar 250ms aralıklarla gelir. suppressAudio(150) çağrısından sonra ilk chunk T+150-400ms arasında gelebilir. STT restart (355ms) bu aralığı kapsar — chunk geldiğinde connection henüz yoksa feedAudio sessizce drop eder.
+
+---
+
 ## Ortak Prensipler (Test 3 + Test 4 + Test 5)
 
 ### 1. LLM Çıktısına Güvenme, Doğrula
