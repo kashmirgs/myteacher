@@ -1,0 +1,17 @@
+{
+  "name": "@myteacher/shared",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./src/protocol.ts",
+  "types": "./src/protocol.ts",
+  "exports": {
+    ".": "./src/protocol.ts"
+  },
+  "scripts": {
+    "build": "tsc"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}

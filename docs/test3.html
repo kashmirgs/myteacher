@@ -1,0 +1,1719 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Test 3 — Barge-in (Araya Girme)</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --border: #2a2d3a;
+    --text: #e1e4ed;
+    --muted: #8b8fa3;
+    --green: #22c55e;
+    --red: #ef4444;
+    --blue: #3b82f6;
+    --yellow: #eab308;
+    --purple: #a855f7;
+    --board-bg: #1a3a2a;
+    --board-text: #e8e8d8;
+    --chalk: #f0f0e0;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', monospace;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  /* ─── State bar (top) ─── */
+  .state-bar {
+    height: 36px;
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    transition: background 0.3s;
+    gap: 12px;
+  }
+  .state-bar.IDLE        { background: #374151; color: #9ca3af; }
+  .state-bar.TEACHING    { background: #166534; color: #86efac; }
+  .state-bar.INTERRUPTING{ background: #854d0e; color: #fde047; }
+  .state-bar.LISTENING   { background: #1e3a5f; color: #93c5fd; }
+  .state-bar.RESPONDING  { background: #581c87; color: #d8b4fe; }
+  .state-bar .state-label { flex: 1; }
+  .state-bar .state-timer { font-weight: 400; font-size: 11px; opacity: 0.8; }
+
+  .layout {
+    display: flex;
+    height: calc(100vh - 36px);
+  }
+
+  /* ─── Board (left 70%) ─── */
+  .board-panel {
+    flex: 0 0 70%;
+    background: var(--board-bg);
+    padding: 32px 40px;
+    overflow-y: auto;
+    position: relative;
+    border-right: 2px solid #2a4a3a;
+    display: flex;
+    flex-direction: column;
+  }
+  .board-panel::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background:
+      repeating-linear-gradient(0deg, transparent, transparent 39px, rgba(255,255,255,0.03) 39px, rgba(255,255,255,0.03) 40px);
+    pointer-events: none;
+  }
+  .board-panel .chalk-tray {
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 8px;
+    background: linear-gradient(to bottom, #3a2a1a, #2a1a0a);
+  }
+  .board-content { flex: 1; position: relative; z-index: 1; }
+
+  .board-item {
+    margin-bottom: 16px;
+    min-height: 1.2em;
+    position: relative;
+    opacity: 0;
+    transition: opacity 0.2s;
+  }
+  .board-item.visible { opacity: 1; }
+  .board-item.active-item { }
+  .board-item.interrupted {
+    opacity: 0.5;
+  }
+
+  .board-item[data-type="title"] {
+    font-size: 28px;
+    font-weight: 700;
+    text-align: center;
+    color: var(--chalk);
+    text-decoration: underline;
+    text-underline-offset: 6px;
+    margin-bottom: 24px;
+  }
+  .board-item[data-type="text"] {
+    font-size: 20px;
+    color: var(--board-text);
+    line-height: 1.6;
+  }
+  .board-item[data-type="step"] {
+    font-size: 20px;
+    color: var(--board-text);
+    line-height: 1.6;
+  }
+  .board-item[data-type="step"]::before {
+    content: '\2192 ';
+    color: var(--yellow);
+  }
+  .board-item[data-type="formula"] {
+    font-size: 22px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    text-align: center;
+    color: var(--yellow);
+    margin: 12px 0;
+    letter-spacing: 1px;
+    white-space: pre-line;
+  }
+  .board-item[data-type="highlight"] {
+    font-size: 20px;
+    color: var(--chalk);
+    background: rgba(34, 197, 94, 0.15);
+    border: 1px solid rgba(34, 197, 94, 0.3);
+    border-radius: 6px;
+    padding: 10px 16px;
+    margin: 8px 0;
+  }
+
+  .cursor {
+    display: inline-block;
+    width: 2px;
+    height: 1em;
+    background: var(--chalk);
+    animation: blink 0.6s step-end infinite;
+    vertical-align: text-bottom;
+    margin-left: 1px;
+  }
+  @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
+
+  /* ─── AI response bubble on board ─── */
+  .ai-response-bubble {
+    margin: 16px 0;
+    padding: 12px 16px;
+    background: rgba(168, 85, 247, 0.15);
+    border: 1px solid rgba(168, 85, 247, 0.3);
+    border-radius: 8px;
+    color: #d8b4fe;
+    font-size: 18px;
+    line-height: 1.5;
+    opacity: 0;
+    transition: opacity 0.2s;
+  }
+  .ai-response-bubble.visible { opacity: 1; }
+
+  /* ─── Control panel (right 30%) ─── */
+  .control-panel {
+    flex: 0 0 30%;
+    background: var(--bg);
+    padding: 16px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .panel-section {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+  }
+  .panel-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+
+  /* Status */
+  .status-bar { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--red); flex-shrink: 0; }
+  .status-dot.connected { background: var(--green); }
+  .status-dot.processing { background: var(--yellow); animation: pulse 1s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+  /* Input */
+  .question-input {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 13px;
+    outline: none;
+    resize: vertical;
+    min-height: 50px;
+  }
+  .question-input:focus { border-color: var(--blue); }
+
+  .btn-row { display: flex; gap: 8px; margin-top: 8px; }
+  .btn {
+    flex: 1;
+    padding: 10px 12px;
+    border: none;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.2s;
+  }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn:hover:not(:disabled) { opacity: 0.85; }
+  .btn-primary { background: var(--blue); color: white; }
+  .btn-secondary { background: var(--surface); color: var(--muted); border: 1px solid var(--border); }
+  .btn-danger { background: var(--red); color: white; }
+
+  /* Radio group */
+  .radio-group { display: flex; gap: 6px; flex-wrap: wrap; }
+  .radio-option {
+    flex: 1;
+    text-align: center;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+    color: var(--muted);
+    transition: all 0.2s;
+    min-width: 0;
+  }
+  .radio-option.selected {
+    border-color: var(--blue);
+    color: var(--blue);
+    background: rgba(59, 130, 246, 0.1);
+  }
+  .radio-label { font-size: 11px; color: var(--muted); margin-bottom: 6px; }
+
+  /* Mic / VAD section */
+  .mic-section {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .mic-btn {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    border: 2px solid var(--border);
+    background: var(--surface);
+    color: var(--muted);
+    font-size: 20px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+    flex-shrink: 0;
+  }
+  .mic-btn.active {
+    border-color: var(--red);
+    color: var(--red);
+    background: rgba(239, 68, 68, 0.1);
+  }
+  .mic-btn.listening {
+    border-color: var(--blue);
+    color: var(--blue);
+    background: rgba(59, 130, 246, 0.1);
+    animation: pulse 1s infinite;
+  }
+  .vad-indicator {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .vad-bar-container {
+    height: 6px;
+    background: var(--bg);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .vad-bar {
+    height: 100%;
+    width: 0%;
+    background: var(--green);
+    border-radius: 3px;
+    transition: width 0.05s;
+  }
+  .vad-bar.active { background: var(--red); }
+  .vad-label { font-size: 10px; color: var(--muted); }
+
+  /* Conversation panel */
+  .conversation-panel {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .stt-live {
+    min-height: 36px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: rgba(59, 130, 246, 0.08);
+    border: 1px solid rgba(59, 130, 246, 0.2);
+    color: #93c5fd;
+    font-size: 12px;
+    line-height: 1.4;
+    word-break: break-word;
+  }
+  .stt-live-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+  .stt-status {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--muted);
+    padding: 2px 6px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: rgba(148, 163, 184, 0.1);
+    white-space: nowrap;
+  }
+  .conv-msg {
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  .conv-msg.student {
+    background: rgba(59, 130, 246, 0.1);
+    border: 1px solid rgba(59, 130, 246, 0.2);
+    color: #93c5fd;
+    align-self: flex-end;
+    max-width: 90%;
+  }
+  .conv-msg.ai {
+    background: rgba(168, 85, 247, 0.1);
+    border: 1px solid rgba(168, 85, 247, 0.2);
+    color: #d8b4fe;
+    align-self: flex-start;
+    max-width: 90%;
+  }
+  .conv-msg.interim {
+    opacity: 0.5;
+    font-style: italic;
+  }
+  .conv-msg .msg-label {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    margin-bottom: 2px;
+    opacity: 0.7;
+  }
+
+  /* Metrics summary */
+  .metric-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 3px 0;
+    font-size: 12px;
+  }
+  .metric-row .label { color: var(--muted); }
+  .metric-row .value { font-weight: 700; }
+
+  /* Interrupt detail table */
+  .interrupt-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
+  }
+  .interrupt-table th {
+    text-align: left;
+    color: var(--muted);
+    font-weight: 600;
+    padding: 3px 4px;
+    border-bottom: 1px solid var(--border);
+    font-size: 10px;
+    text-transform: uppercase;
+  }
+  .interrupt-table td {
+    padding: 3px 4px;
+    border-bottom: 1px solid rgba(42, 45, 58, 0.5);
+  }
+  .speed-badge {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 700;
+  }
+  .speed-badge.fast { background: rgba(34,197,94,0.15); color: var(--green); }
+  .speed-badge.ok   { background: rgba(234,179,8,0.15); color: var(--yellow); }
+  .speed-badge.slow { background: rgba(239,68,68,0.15); color: var(--red); }
+
+  /* State log */
+  .state-log {
+    max-height: 120px;
+    overflow-y: auto;
+    font-size: 10px;
+    line-height: 1.6;
+    color: var(--muted);
+  }
+  .state-log-entry { display: flex; gap: 8px; }
+  .state-log-entry .ts { color: var(--muted); min-width: 50px; }
+  .state-log-entry .st { font-weight: 700; }
+  .state-log-entry .st.TEACHING    { color: var(--green); }
+  .state-log-entry .st.INTERRUPTING{ color: var(--yellow); }
+  .state-log-entry .st.LISTENING   { color: var(--blue); }
+  .state-log-entry .st.RESPONDING  { color: var(--purple); }
+  .state-log-entry .st.IDLE        { color: var(--muted); }
+</style>
+</head>
+<body>
+
+<!-- State bar -->
+<div class="state-bar IDLE" id="stateBar">
+  <span class="state-label" id="stateLabel">IDLE</span>
+  <span class="state-timer" id="stateTimer">0ms</span>
+</div>
+
+<div class="layout">
+  <!-- Board -->
+  <div class="board-panel" id="boardPanel">
+    <div class="board-content" id="board"></div>
+    <div class="chalk-tray"></div>
+  </div>
+
+  <!-- Control Panel -->
+  <div class="control-panel">
+    <!-- Status -->
+    <div class="panel-section">
+      <div class="status-bar">
+        <div class="status-dot" id="statusDot"></div>
+        <span id="statusText">Baglaniyor...</span>
+      </div>
+    </div>
+
+    <!-- Controls -->
+    <div class="panel-section">
+      <div class="panel-title">Soru</div>
+      <textarea class="question-input" id="questionInput">Birinci derece denklemleri adim adim anlat</textarea>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="startBtn" disabled>Ders Baslat</button>
+        <button class="btn btn-secondary" id="resetBtn">Sifirla</button>
+      </div>
+    </div>
+
+    <!-- Speed -->
+    <div class="panel-section">
+      <div class="radio-label">Konusma Hizi</div>
+      <div class="radio-group" id="speedGroup">
+        <div class="radio-option" data-value="slow">Yavas</div>
+        <div class="radio-option selected" data-value="normal">Normal</div>
+        <div class="radio-option" data-value="fast">Hizli</div>
+      </div>
+    </div>
+
+    <!-- Microphone / VAD -->
+    <div class="panel-section">
+      <div class="panel-title">Mikrofon</div>
+      <div class="mic-section">
+        <button class="mic-btn" id="micBtn" title="Mikrofonu Ac">&#x1F3A4;</button>
+        <div class="vad-indicator">
+          <div class="vad-bar-container">
+            <div class="vad-bar" id="vadBar"></div>
+          </div>
+          <div class="vad-label" id="vadLabel">Mikrofon kapali</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Conversation -->
+    <div class="panel-section" style="flex:1; display:flex; flex-direction:column; min-height:0">
+      <div class="panel-title">Konusma</div>
+      <div class="stt-live-row">
+        <div class="panel-title" style="margin-top:6px">Anlik STT</div>
+        <div class="stt-status" id="sttStatus">Beklemede</div>
+      </div>
+      <div class="stt-live" id="sttLive">-</div>
+      <div class="conversation-panel" id="convPanel"></div>
+    </div>
+
+    <!-- Metrics -->
+    <div class="panel-section" id="metricsSection" style="display:none">
+      <div class="panel-title">Metrikler</div>
+      <div class="metric-row">
+        <span class="label">LLM Suresi</span>
+        <span class="value" id="mLlm">-</span>
+      </div>
+      <div class="metric-row">
+        <span class="label">Toplam Item</span>
+        <span class="value" id="mItems">-</span>
+      </div>
+      <div class="metric-row">
+        <span class="label">Interrupt Sayisi</span>
+        <span class="value" id="mInterrupts">0</span>
+      </div>
+      <div class="metric-row">
+        <span class="label">Ort. Interrupt Hizi</span>
+        <span class="value" id="mAvgInterrupt">-</span>
+      </div>
+    </div>
+
+    <!-- Interrupt detail table -->
+    <div class="panel-section" id="interruptSection" style="display:none">
+      <div class="panel-title">Interrupt Detay</div>
+      <table class="interrupt-table">
+        <thead>
+          <tr><th>#</th><th>Item</th><th>Hiz</th><th>STT</th><th>LLM</th><th>Durum</th></tr>
+        </thead>
+        <tbody id="interruptBody"></tbody>
+      </table>
+    </div>
+
+    <!-- State log -->
+    <div class="panel-section">
+      <div class="panel-title">State Log</div>
+      <div class="state-log" id="stateLog"></div>
+    </div>
+  </div>
+</div>
+
+  <script src="transcript_utils.js"></script>
+<script>
+const WS_URL = `ws://${location.host}/ws/test3`;
+const PCM_SAMPLE_RATE = 24000;
+const TYPE_SPEED = { title: 40, text: 30, step: 30, formula: 50, highlight: 30 };
+
+// VAD config
+const VAD_THRESHOLD = 0.008;              // Normal (TTS not playing)
+const VAD_INTERRUPT_THRESHOLD = 0.015;    // Slightly higher during TTS to guard against AEC residual
+const VAD_WINDOW_SIZE = 8;                // Sliding window: last 8 frames (400ms)
+const VAD_TRIGGER_COUNT_NORMAL = 3;       // Need 3/8 above threshold to trigger (normal)
+const VAD_TRIGGER_COUNT_TTS = 4;          // Need 4/8 above threshold to trigger (during TTS — extra frame for AEC residual)
+const SILENCE_TIMEOUT_MS = 1500;
+
+// ─── State ───
+let ws;
+let audioCtx = null;
+let masterGain = null;
+let currentState = 'IDLE';
+let speed = 'normal';
+let sessionT0 = null;
+
+// Audio tracking
+let globalNextStartTime = 0;
+let audioSources = [];
+
+// Board state
+let allItems = [];
+let activeTypewriter = null; // { el, text, charIdx, timer, state:'running'|'paused' }
+let currentStreamingItem = null;  // { index, item, el, displayText, audioPlaybackEnd }
+let displayQueue = [];            // audioReady items bekleyen sıra
+let displayCheckTimer = null;     // tryDisplayNext retry timer
+let lessonCompleteDeferred = false; // lesson_complete geldi ama queue henüz boşalmadı
+let aiResponseAudioEnd = 0;  // AI cevabı audio'sunun biteceği zaman (audioCtx.currentTime cinsinden)
+let suppressBoardItems = false; // Interrupt sonrası geç gelen board item'larını yok say
+let listenStartTime = null;     // LISTENING state'e giriş zamanı
+const MAX_LISTEN_MS = 10000;    // Maksimum LISTENING süresi (10s) — sonra auto-resume
+
+// Mic & VAD
+let micStream = null;
+let micActive = false;
+let micAudioCtx = null;  // Separate AudioContext at native sampleRate for VAD
+let analyser = null;
+let vadActive = false;
+let vadWindow = new Array(VAD_WINDOW_SIZE).fill(false);  // Sliding window of above-threshold frames
+let vadWindowIdx = 0;
+let silenceTimer = null;
+let vadPollTimer = null;
+
+// Deepgram STT
+let dgSocket = null;
+let dgConnecting = false;  // Guard against concurrent startDeepgramSTT() calls
+let interimEl = null;
+
+// PCM ring buffer (captures audio continuously so pre-speech is never lost)
+let pcmProcessor = null;        // AudioWorkletNode
+let pcmRingBuffer = null;       // Float32Array — last ~3s circular buffer
+let pcmRingWriteIdx = 0;
+let pcmCapturing = false;       // true → live PCM flows to Deepgram
+const RING_BUFFER_MS = 1500;    // Total ring buffer duration — entire buffer sent on STT start
+let finalTranscript = '';
+let latestInterim = '';
+let heardSpeechEnergy = false;
+let lastSpeechEnergyAt = 0;
+let speechNoTranscriptCount = 0;
+let speechNoTranscriptStreak = 0;
+
+// Interrupt metrics
+let interrupts = [];
+let currentInterrupt = null;
+
+// DOM refs
+const stateBar = document.getElementById('stateBar');
+const stateLabel = document.getElementById('stateLabel');
+const stateTimer = document.getElementById('stateTimer');
+const board = document.getElementById('board');
+const boardPanel = document.getElementById('boardPanel');
+const statusDot = document.getElementById('statusDot');
+const statusText = document.getElementById('statusText');
+const startBtn = document.getElementById('startBtn');
+const resetBtn = document.getElementById('resetBtn');
+const questionInput = document.getElementById('questionInput');
+const micBtn = document.getElementById('micBtn');
+const vadBar = document.getElementById('vadBar');
+const vadLabel = document.getElementById('vadLabel');
+const convPanel = document.getElementById('convPanel');
+const sttLive = document.getElementById('sttLive');
+const sttStatus = document.getElementById('sttStatus');
+const stateLog = document.getElementById('stateLog');
+
+// ─── Radio group ───
+function setupRadioGroup(groupId, onChange) {
+  const group = document.getElementById(groupId);
+  group.querySelectorAll('.radio-option').forEach(opt => {
+    opt.addEventListener('click', () => {
+      group.querySelectorAll('.radio-option').forEach(o => o.classList.remove('selected'));
+      opt.classList.add('selected');
+      onChange(opt.dataset.value);
+    });
+  });
+}
+setupRadioGroup('speedGroup', v => {
+  speed = v;
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'set_speed', speed: v }));
+  }
+});
+
+// ─── Audio context + GainNode ───
+function ensureAudioCtx() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: PCM_SAMPLE_RATE });
+    masterGain = audioCtx.createGain();
+    masterGain.connect(audioCtx.destination);
+  }
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  return audioCtx;
+}
+
+function stopAllAudio() {
+  if (!audioCtx || !masterGain) return;
+  // Fade out over 50ms to prevent click
+  const now = audioCtx.currentTime;
+  masterGain.gain.setValueAtTime(masterGain.gain.value, now);
+  masterGain.gain.linearRampToValueAtTime(0, now + 0.05);
+
+  setTimeout(() => {
+    audioSources.forEach(src => {
+      try { src.stop(); } catch(e) {}
+    });
+    audioSources = [];
+    globalNextStartTime = 0;
+    // Restore gain
+    if (masterGain) {
+      masterGain.gain.setValueAtTime(1, audioCtx.currentTime);
+    }
+  }, 60);
+}
+
+function scheduleAudioChunk(arrayBuffer) {
+  if (suppressBoardItems) return;
+  const ctx = ensureAudioCtx();
+  const float32 = new Float32Array(arrayBuffer);
+  if (float32.length === 0) return;
+
+  const buf = ctx.createBuffer(1, float32.length, PCM_SAMPLE_RATE);
+  buf.getChannelData(0).set(float32);
+
+  const source = ctx.createBufferSource();
+  source.buffer = buf;
+  source.connect(masterGain);
+
+  const now = ctx.currentTime;
+  if (globalNextStartTime < now) globalNextStartTime = now;
+
+  source.start(globalNextStartTime);
+  globalNextStartTime += buf.duration;
+
+  audioSources.push(source);
+  source.onended = () => {
+    const idx = audioSources.indexOf(source);
+    if (idx !== -1) audioSources.splice(idx, 1);
+  };
+
+  // Streaming item'a audio bitiş zamanını bildir
+  if (currentStreamingItem) {
+    currentStreamingItem.audioPlaybackEnd = globalNextStartTime;
+  }
+}
+
+// ─── WebSocket ───
+function connectWS() {
+  ws = new WebSocket(WS_URL);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => {
+    statusDot.className = 'status-dot connected';
+    statusText.textContent = 'Bagli';
+    startBtn.disabled = false;
+  };
+  ws.onclose = (e) => {
+    console.log('[WS] Connection closed, code:', e.code, 'reason:', e.reason);
+    statusDot.className = 'status-dot';
+    statusText.textContent = 'Baglanti kesildi...';
+    startBtn.disabled = true;
+    setTimeout(connectWS, 2000);
+  };
+  ws.onerror = () => {
+    statusDot.className = 'status-dot';
+    statusText.textContent = 'Hata';
+  };
+
+  ws.onmessage = (event) => {
+    if (event.data instanceof ArrayBuffer) {
+      scheduleAudioChunk(event.data);
+      return;
+    }
+
+    const msg = JSON.parse(event.data);
+    switch (msg.type) {
+      case 'state_change':    handleStateChange(msg); break;
+      case 'board_plan':      handleBoardPlan(msg); break;
+      case 'board_item_start': handleBoardItemStart(msg); break;
+      case 'board_item_complete': handleBoardItemComplete(msg); break;
+      case 'interrupt_ack':   handleInterruptAck(msg); break;
+      case 'ai_response_start': handleAiResponseStart(msg); break;
+      case 'ai_response_complete': handleAiResponseComplete(msg); break;
+      case 'lesson_complete': handleLessonComplete(msg); break;
+      case 'error':           handleError(msg.text); break;
+    }
+  };
+}
+
+// ─── State management ───
+function handleStateChange(msg) {
+  currentState = msg.new;
+  if (msg.new === 'TEACHING' || msg.new === 'RESPONDING') { suppressBoardItems = false; listenStartTime = null; }
+  if (msg.new === 'LISTENING') listenStartTime = performance.now();
+  stateBar.className = 'state-bar ' + currentState;
+  stateLabel.textContent = currentState;
+  stateTimer.textContent = msg.timestamp + 'ms';
+
+  // Log
+  const entry = document.createElement('div');
+  entry.className = 'state-log-entry';
+  entry.innerHTML = `<span class="ts">${msg.timestamp}ms</span><span class="st ${msg.new}">${msg.old} → ${msg.new}</span>`;
+  stateLog.appendChild(entry);
+  stateLog.scrollTop = stateLog.scrollHeight;
+}
+
+// ─── Board plan ───
+function handleBoardPlan(msg) {
+  allItems = msg.items || [];
+  document.getElementById('metricsSection').style.display = '';
+  document.getElementById('mLlm').textContent = msg.t_llm_ms + 'ms';
+  document.getElementById('mItems').textContent = msg.items_count;
+}
+
+// ─── Board item start: create element, defer typewriter until audio ready ───
+function handleBoardItemStart(msg) {
+  if (suppressBoardItems) return;
+  const { item, index } = msg;
+
+  // Interrupt sonrası paused typewriter varsa tamamla
+  if (activeTypewriter && activeTypewriter.state === 'paused') {
+    if (activeTypewriter.timer) clearTimeout(activeTypewriter.timer);
+    activeTypewriter.el.textContent = activeTypewriter.text;
+    activeTypewriter.state = 'done';
+    activeTypewriter = null;
+  }
+
+  // Dedup: interrupt sırasında flush edilen element varsa kaldır (backend tekrar gönderdi)
+  const existingEl = document.getElementById(`item-${index}`);
+  if (existingEl) existingEl.remove();
+
+  const el = document.createElement('div');
+  el.className = 'board-item';  // visible DEĞİL — henüz gösterme
+  el.dataset.type = item.type;
+  el.dataset.index = index;
+  el.id = `item-${index}`;
+  board.appendChild(el);
+
+  let displayText = item.text || '';
+  if (item.type === 'formula') {
+    displayText = displayText.replace(/ • /g, '\n');
+  }
+
+  // Sadece kaydet, typewriter başlatma
+  currentStreamingItem = {
+    index, item, el, displayText,
+    audioPlaybackEnd: null,
+  };
+}
+
+function typewriterTick() {
+  if (!activeTypewriter || activeTypewriter.state !== 'running') return;
+  const tw = activeTypewriter;
+
+  if (tw.charIdx <= tw.text.length) {
+    tw.el.textContent = tw.text.substring(0, tw.charIdx);
+
+    if (tw.charIdx < tw.text.length) {
+      const cursor = document.createElement('span');
+      cursor.className = 'cursor';
+      tw.el.appendChild(cursor);
+    }
+
+    tw.charIdx++;
+
+    // Dinamik pacing: audio bitiş zamanına göre hız ayarla
+    let msPerChar = TYPE_SPEED[tw.type] || 30;
+    if (tw.audioPlaybackEnd && audioCtx) {
+      const audioRemainingMs = Math.max(0, (tw.audioPlaybackEnd - audioCtx.currentTime) * 1000);
+      const remainingChars = tw.text.length - tw.charIdx + 1;
+      if (remainingChars > 0 && audioRemainingMs > 0) {
+        msPerChar = Math.max(15, Math.min(800, audioRemainingMs / remainingChars));
+      }
+    }
+
+    tw.timer = setTimeout(typewriterTick, msPerChar);
+  } else {
+    // Typewriter done for this item
+    tw.state = 'done';
+    tryDisplayNext();
+  }
+}
+
+function pauseTypewriter() {
+  if (activeTypewriter && activeTypewriter.state === 'running') {
+    activeTypewriter.state = 'paused';
+    if (activeTypewriter.timer) {
+      clearTimeout(activeTypewriter.timer);
+      activeTypewriter.timer = null;
+    }
+  }
+}
+
+function resumeTypewriter() {
+  if (activeTypewriter && activeTypewriter.state === 'paused') {
+    activeTypewriter.state = 'running';
+    typewriterTick();
+  }
+}
+
+function cancelTypewriter(removeElement = false) {
+  if (activeTypewriter) {
+    if (activeTypewriter.timer) clearTimeout(activeTypewriter.timer);
+    activeTypewriter.state = 'done';
+    if (removeElement) {
+      if (activeTypewriter.el) activeTypewriter.el.remove();
+    } else {
+      // Show full text immediately
+      if (activeTypewriter.el && activeTypewriter.text) {
+        activeTypewriter.el.textContent = activeTypewriter.text;
+      }
+    }
+    activeTypewriter = null;
+  }
+}
+
+// ─── Board item complete: queue'ya ekle, tryDisplayNext çağır ───
+function handleBoardItemComplete(msg) {
+  if (suppressBoardItems) return;
+  if (!currentStreamingItem) return;
+
+  currentStreamingItem.audioPlaybackEnd = globalNextStartTime;
+
+  displayQueue.push({
+    index: currentStreamingItem.index,
+    item: currentStreamingItem.item,
+    el: currentStreamingItem.el,
+    displayText: currentStreamingItem.displayText,
+    audioPlaybackEnd: currentStreamingItem.audioPlaybackEnd,
+  });
+
+  currentStreamingItem = null;
+  tryDisplayNext();
+}
+
+function tryDisplayNext() {
+  if (displayCheckTimer) {
+    clearTimeout(displayCheckTimer);
+    displayCheckTimer = null;
+  }
+
+  if (suppressBoardItems) return;
+
+  if (displayQueue.length === 0) {
+    // Queue boşaldı — deferred lesson_complete varsa finalize et
+    if (lessonCompleteDeferred) {
+      finalizeLessonComplete();
+    }
+    return;
+  }
+
+  // Mevcut typewriter bitmediyse bekle
+  if (activeTypewriter && activeTypewriter.state !== 'done') return;
+
+  // AI cevap audio'su hala çalıyorsa bekle
+  if (aiResponseAudioEnd && audioCtx && audioCtx.currentTime < aiResponseAudioEnd) {
+    const remaining = (aiResponseAudioEnd - audioCtx.currentTime) * 1000;
+    if (remaining > 50) {
+      displayCheckTimer = setTimeout(tryDisplayNext, Math.max(10, remaining));
+      return;
+    }
+    aiResponseAudioEnd = 0; // geçtik, temizle
+  }
+
+  // Önceki item'ın audio'su hala çalıyorsa bekle
+  if (activeTypewriter && activeTypewriter.audioPlaybackEnd && audioCtx) {
+    const remaining = (activeTypewriter.audioPlaybackEnd - audioCtx.currentTime) * 1000;
+    if (remaining > 50) {
+      displayCheckTimer = setTimeout(tryDisplayNext, Math.max(10, remaining));
+      return;
+    }
+  }
+
+  const queued = displayQueue.shift();
+
+  queued.el.classList.add('visible');
+
+  activeTypewriter = {
+    el: queued.el,
+    text: queued.displayText,
+    charIdx: 0,
+    timer: null,
+    state: 'running',
+    type: queued.item.type,
+    audioPlaybackEnd: queued.audioPlaybackEnd,  // İlk tick'ten itibaren set
+  };
+  typewriterTick();
+
+  boardPanel.scrollTop = boardPanel.scrollHeight;
+}
+
+// ─── Interrupt ack ───
+function handleInterruptAck(msg) {
+  if (currentInterrupt) {
+    currentInterrupt.ackTime = performance.now();
+    currentInterrupt.interruptSpeed = currentInterrupt.ackTime - currentInterrupt.triggerTime;
+    currentInterrupt.interruptedItem = msg.interrupted_at_index;
+  }
+  // No .interrupted class — partial text stays as-is
+  updateInterruptTable();
+}
+
+// ─── AI response ───
+function handleAiResponseStart(msg) {
+  if (currentInterrupt) {
+    currentInterrupt.llmMs = msg.llm_ms;
+  }
+
+  // Show on board as a response bubble
+  const bubble = document.createElement('div');
+  bubble.className = 'ai-response-bubble';
+  bubble.textContent = msg.text;
+  board.appendChild(bubble);
+  requestAnimationFrame(() => bubble.classList.add('visible'));
+  boardPanel.scrollTop = boardPanel.scrollHeight;
+
+  // Show in conversation panel
+  addConvMsg('ai', msg.text);
+}
+
+function handleAiResponseComplete(msg) {
+  // AI audio'sunun frontend'de ne zaman biteceğini kaydet
+  if (audioCtx) {
+    aiResponseAudioEnd = globalNextStartTime;
+  }
+
+  if (currentInterrupt) {
+    currentInterrupt.complete = true;
+    updateInterruptTable();
+  }
+  currentInterrupt = null;
+}
+
+// ─── Lesson complete ───
+function handleLessonComplete(msg) {
+  // Queue hala doluysa veya typewriter çalışıyorsa, defer et
+  if (displayQueue.length > 0 || (activeTypewriter && activeTypewriter.state !== 'done')) {
+    lessonCompleteDeferred = true;
+    return;
+  }
+  finalizeLessonComplete();
+}
+
+function finalizeLessonComplete() {
+  lessonCompleteDeferred = false;
+  currentStreamingItem = null;
+  if (displayCheckTimer) { clearTimeout(displayCheckTimer); displayCheckTimer = null; }
+
+  // Aktif typewriter varsa tamamla (safety net)
+  if (activeTypewriter && activeTypewriter.el) {
+    if (activeTypewriter.timer) clearTimeout(activeTypewriter.timer);
+    activeTypewriter.el.textContent = activeTypewriter.text;
+    activeTypewriter.state = 'done';
+    activeTypewriter = null;
+  }
+
+  statusDot.className = 'status-dot connected';
+  statusText.textContent = 'Ders tamamlandi';
+  startBtn.disabled = false;
+  stopVADPolling();
+}
+
+// ─── Error ───
+function handleError(text) {
+  console.error('Server error:', text);
+  statusText.textContent = 'Hata: ' + text;
+}
+
+// ─── Conversation panel ───
+function addConvMsg(role, text, isInterim) {
+  const msg = document.createElement('div');
+  msg.className = 'conv-msg ' + role + (isInterim ? ' interim' : '');
+  const labelText = role === 'student' ? 'Ogrenci' : 'Ogretmen';
+  msg.innerHTML = `<div class="msg-label">${labelText}</div>${escapeHtml(text)}`;
+  if (isInterim) msg.id = 'interimMsg';
+  convPanel.appendChild(msg);
+  convPanel.scrollTop = convPanel.scrollHeight;
+  return msg;
+}
+
+function updateInterimMsg(text) {
+  let el = document.getElementById('interimMsg');
+  if (!el) {
+    el = addConvMsg('student', text, true);
+  } else {
+    el.innerHTML = `<div class="msg-label">Ogrenci</div>${escapeHtml(text)}`;
+  }
+  setSttLive(text || '-');
+  setSttStatus(text ? 'Algilaniyor' : 'Dinleniyor');
+}
+
+function removeInterimMsg() {
+  const el = document.getElementById('interimMsg');
+  if (el) el.remove();
+  setSttLive('-');
+  setSttStatus('Beklemede');
+}
+
+function setSttLive(text) {
+  if (!sttLive) return;
+  sttLive.textContent = text || '-';
+}
+
+function setSttStatus(text) {
+  if (!sttStatus) return;
+  sttStatus.textContent = text || 'Beklemede';
+}
+
+function escapeHtml(s) {
+  const div = document.createElement('div');
+  div.textContent = s;
+  return div.innerHTML;
+}
+
+// ─── PCM helpers ───
+function float32ToInt16(float32) {
+  const int16 = new Int16Array(float32.length);
+  for (let i = 0; i < float32.length; i++) {
+    const s = Math.max(-1, Math.min(1, float32[i]));
+    int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+  }
+  return int16;
+}
+
+function extractRingBuffer() {
+  // Return the entire ring buffer in chronological order (oldest → newest)
+  // pcmRingWriteIdx points to the NEXT write position = oldest data in the ring
+  const result = new Float32Array(pcmRingBuffer.length);
+  let readIdx = pcmRingWriteIdx;
+  for (let i = 0; i < pcmRingBuffer.length; i++) {
+    result[i] = pcmRingBuffer[readIdx];
+    readIdx = (readIdx + 1) % pcmRingBuffer.length;
+  }
+  return result;
+}
+
+// ─── Microphone + VAD ───
+async function setupMic() {
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,    // TTS bleed'i siler (browser AEC)
+        noiseSuppression: true,    // Arka plan gürültüsünü azaltır
+        autoGainControl: true,     // Farklı mikrofon seviyelerini normalize eder
+      }
+    });
+    micActive = true;
+    micBtn.classList.add('active');
+    vadLabel.textContent = 'Mikrofon acik — dinliyor';
+
+    // Use separate AudioContext at native sampleRate for VAD (not the 24kHz TTS context)
+    if (!micAudioCtx) {
+      micAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    if (micAudioCtx.state === 'suspended') await micAudioCtx.resume();
+    console.log('[MIC] VAD AudioContext state:', micAudioCtx.state, 'sampleRate:', micAudioCtx.sampleRate);
+    const source = micAudioCtx.createMediaStreamSource(micStream);
+    analyser = micAudioCtx.createAnalyser();
+    analyser.fftSize = 2048;
+    source.connect(analyser);
+
+    // Continuous PCM ring buffer via AudioWorklet
+    // (ScriptProcessorNode receives silent buffers from MediaStreamSource in Safari)
+    const workletCode = `
+      class PCMRingProcessor extends AudioWorkletProcessor {
+        process(inputs, outputs) {
+          const ch = inputs[0]?.[0];
+          if (ch && ch.length > 0) {
+            this.port.postMessage(new Float32Array(ch));
+          }
+          // Zero output so mic audio doesn't play through speakers
+          const out = outputs[0]?.[0];
+          if (out) out.fill(0);
+          return true;
+        }
+      }
+      registerProcessor('pcm-ring', PCMRingProcessor);
+    `;
+    const blob = new Blob([workletCode], { type: 'application/javascript' });
+    const workletUrl = URL.createObjectURL(blob);
+    await micAudioCtx.audioWorklet.addModule(workletUrl);
+    URL.revokeObjectURL(workletUrl);
+
+    const ringSize = Math.ceil(micAudioCtx.sampleRate * RING_BUFFER_MS / 1000);
+    pcmRingBuffer = new Float32Array(ringSize);
+    pcmRingWriteIdx = 0;
+
+    pcmProcessor = new AudioWorkletNode(micAudioCtx, 'pcm-ring');
+    let pcmFrameCount = 0;
+    pcmProcessor.port.onmessage = (e) => {
+      const input = e.data; // Float32Array (~128 samples per frame)
+      // Always write into ring buffer
+      for (let i = 0; i < input.length; i++) {
+        pcmRingBuffer[pcmRingWriteIdx] = input[i];
+        pcmRingWriteIdx = (pcmRingWriteIdx + 1) % pcmRingBuffer.length;
+      }
+      // Debug: log first few frames to verify data is flowing
+      if (++pcmFrameCount <= 3) {
+        const maxVal = input.reduce((m, v) => Math.max(m, Math.abs(v)), 0);
+        console.log('[PCM] Frame', pcmFrameCount, 'samples:', input.length, 'peak:', maxVal.toFixed(5));
+      }
+      // Stream live PCM to Deepgram when active
+      if (pcmCapturing && dgSocket && dgSocket.readyState === WebSocket.OPEN) {
+        const int16 = float32ToInt16(input);
+        dgSocket.send(int16.buffer);
+      }
+    };
+    source.connect(pcmProcessor);
+    pcmProcessor.connect(micAudioCtx.destination); // Keep node alive in all browsers (output is silent)
+
+    console.log('[MIC] Analyser + AudioWorklet PCM ring buffer created, starting VAD polling');
+    startVADPolling();
+  } catch(e) {
+    console.error('Mic error:', e);
+    vadLabel.textContent = 'Mikrofon hatasi: ' + e.message;
+  }
+}
+
+function teardownMic() {
+  micActive = false;
+  micBtn.classList.remove('active', 'listening');
+  vadLabel.textContent = 'Mikrofon kapali';
+  vadBar.style.width = '0%';
+
+  stopVADPolling();
+  stopDeepgramSTT();
+
+  // Clean up AudioWorklet PCM processor
+  if (pcmProcessor) {
+    pcmProcessor.port.close();
+    pcmProcessor.disconnect();
+    pcmProcessor = null;
+  }
+  pcmRingBuffer = null;
+  pcmRingWriteIdx = 0;
+  pcmCapturing = false;
+
+  if (micStream) {
+    micStream.getTracks().forEach(t => t.stop());
+    micStream = null;
+  }
+  analyser = null;
+  if (micAudioCtx) {
+    micAudioCtx.close();
+    micAudioCtx = null;
+  }
+}
+
+function startVADPolling() {
+  if (vadPollTimer) return;
+  vadPollTimer = setInterval(pollVAD, 50);
+}
+
+function stopVADPolling() {
+  if (vadPollTimer) {
+    clearInterval(vadPollTimer);
+    vadPollTimer = null;
+  }
+  vadWindow.fill(false);
+  vadWindowIdx = 0;
+  vadBar.style.width = '0%';
+}
+
+let vadLogCounter = 0;
+function pollVAD() {
+  if (!analyser || !micActive) return;
+
+  const data = new Float32Array(analyser.frequencyBinCount);
+  analyser.getFloatTimeDomainData(data);
+
+  // RMS energy
+  let sum = 0;
+  for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
+  const rms = Math.sqrt(sum / data.length);
+
+  // Slightly higher threshold during TTS to guard against AEC residual
+  const isTTSPlaying = audioCtx && globalNextStartTime > audioCtx.currentTime + 0.1;
+  const threshold = isTTSPlaying ? VAD_INTERRUPT_THRESHOLD : VAD_THRESHOLD;
+  const isAboveThreshold = rms > threshold;
+
+  // Log every ~1 second (20 * 50ms)
+  if (++vadLogCounter % 20 === 0) {
+    console.log('[VAD] RMS:', rms.toFixed(5), 'threshold:', threshold, (isTTSPlaying ? '(TTS)' : ''), 'above:', isAboveThreshold, 'state:', currentState);
+  }
+
+  // Visual bar: AEC removes TTS bleed, show raw RMS always
+  vadBar.style.width = Math.min(100, rms * 2000) + '%';
+  vadBar.classList.toggle('active', isAboveThreshold);
+
+  // Sliding window: record this frame
+  vadWindow[vadWindowIdx] = isAboveThreshold;
+  vadWindowIdx = (vadWindowIdx + 1) % VAD_WINDOW_SIZE;
+  const aboveCount = vadWindow.filter(Boolean).length;
+  const neededFrames = isTTSPlaying ? VAD_TRIGGER_COUNT_TTS : VAD_TRIGGER_COUNT_NORMAL;
+
+  if (isAboveThreshold) {
+    if (currentState === 'LISTENING') {
+      heardSpeechEnergy = true;
+      lastSpeechEnergyAt = performance.now();
+    }
+    // Clear silence timer
+    if (silenceTimer) {
+      clearTimeout(silenceTimer);
+      silenceTimer = null;
+    }
+
+    // Trigger speech when enough frames in window are above threshold
+    if (!vadActive && aboveCount >= neededFrames) {
+      vadActive = true;
+      onSpeechStart();
+    }
+  } else {
+    if (vadActive) {
+      // Start silence timer
+      if (!silenceTimer) {
+        silenceTimer = setTimeout(() => {
+          vadActive = false;
+          silenceTimer = null;
+          onSilenceTimeout();
+        }, SILENCE_TIMEOUT_MS);
+      }
+    }
+  }
+}
+
+function onSpeechStart() {
+  console.log('[VAD] Speech start detected! State:', currentState);
+  if (currentState === 'TEACHING' || currentState === 'RESPONDING') {
+    triggerInterrupt();
+  } else if (currentState === 'IDLE' && (displayQueue.length > 0 || activeTypewriter)) {
+    // Backend finished but frontend still catching up — treat as interrupt
+    console.log('[VAD] IDLE but display still active, triggering interrupt');
+    triggerInterrupt();
+  } else if (currentState === 'LISTENING' || (listenStartTime && dgSocket == null && !dgConnecting)) {
+    // Already listening or in post-interrupt wait — start/restart STT
+    console.log('[VAD] LISTENING/post-interrupt — ensuring STT is active');
+    if (!dgSocket && !dgConnecting) {
+      finalTranscript = '';
+      latestInterim = '';
+      heardSpeechEnergy = false;
+      lastSpeechEnergyAt = 0;
+      speechNoTranscriptStreak = 0;
+      startDeepgramSTT();
+      micBtn.classList.add('listening');
+      vadLabel.textContent = 'Dinleniyor...';
+    }
+  } else {
+    console.log('[VAD] Not in TEACHING/RESPONDING, ignoring speech');
+  }
+}
+
+function onSilenceTimeout() {
+  // Use dgSocket/dgConnecting as fallback — backend state_change may not have arrived yet
+  const isListening = currentState === 'LISTENING' || dgSocket != null || dgConnecting;
+  console.log('[STT] Silence timeout. State:', currentState, 'isListening:', isListening, 'finalTranscript:', JSON.stringify(finalTranscript));
+  if (!isListening) return;
+
+  const finalText = finalTranscript.trim();
+  const interimText = latestInterim.trim();
+  const bestTranscript = pickBestTranscript(finalText, interimText);
+
+  if (bestTranscript) {
+    // Got transcript — close STT and send
+    stopDeepgramSTT();
+    console.log('[STT] Sending student_transcript:', bestTranscript);
+    removeInterimMsg();
+    addConvMsg('student', bestTranscript);
+    ws.send(JSON.stringify({
+      type: 'student_transcript',
+      text: bestTranscript,
+    }));
+    finalTranscript = '';
+    latestInterim = '';
+    heardSpeechEnergy = false;
+    lastSpeechEnergyAt = 0;
+    speechNoTranscriptStreak = 0;
+    if (sttLive) sttLive.textContent = '-';
+  } else {
+    // No transcript yet — check total elapsed time
+    const elapsed = listenStartTime ? performance.now() - listenStartTime : 0;
+    if (heardSpeechEnergy) {
+      speechNoTranscriptStreak += 1;
+      if (speechNoTranscriptStreak < 2) {
+        console.log('[STT] No transcript yet — retrying listen before resume', {
+          streak: speechNoTranscriptStreak,
+          elapsed_ms: Math.round(elapsed),
+        });
+        heardSpeechEnergy = false;
+        lastSpeechEnergyAt = 0;
+        vadLabel.textContent = 'Tekrar soyleyin...';
+        setSttLive('Dinleniyor...');
+        setSttStatus('Tekrar soyle');
+        return;
+      }
+
+      // Speech energy detected twice but STT produced nothing — resume lesson
+      stopDeepgramSTT();
+      speechNoTranscriptCount += 1;
+      console.log('[STT] No transcript but speech energy detected — sending silence_timeout', {
+        count: speechNoTranscriptCount,
+        elapsed_ms: Math.round(elapsed),
+      });
+      removeInterimMsg();
+      ws.send(JSON.stringify({ type: 'silence_timeout', reason: 'speech_no_transcript' }));
+      heardSpeechEnergy = false;
+      lastSpeechEnergyAt = 0;
+      speechNoTranscriptStreak = 0;
+    } else if (elapsed > MAX_LISTEN_MS) {
+      // Give up after max listen duration
+      stopDeepgramSTT();
+      console.log('[STT] No transcript after', Math.round(elapsed), 'ms — sending silence_timeout');
+      removeInterimMsg();
+      ws.send(JSON.stringify({ type: 'silence_timeout' }));
+    } else {
+      // Keep STT connection alive — don't close Deepgram.
+      // User can speak again and audio continues flowing to the same Deepgram session.
+      // VAD will re-trigger onSpeechStart → sees dgSocket alive → skips reconnect.
+      console.log('[STT] No transcript — keeping STT alive, waiting for speech (elapsed:', Math.round(elapsed), 'ms)');
+      vadLabel.textContent = 'Sorunuzu sorun...';
+    }
+  }
+}
+
+// ─── Interrupt trigger ───
+function triggerInterrupt() {
+  console.log('[INTERRUPT] triggerInterrupt called. State:', currentState);
+  if (currentState !== 'TEACHING' && currentState !== 'RESPONDING' && currentState !== 'IDLE') return;
+
+  const triggerTime = performance.now();
+  currentInterrupt = {
+    index: interrupts.length,
+    triggerTime: triggerTime,
+    ackTime: null,
+    interruptSpeed: null,
+    sttStartTime: null,
+    sttEndTime: null,
+    llmMs: null,
+    complete: false,
+  };
+  interrupts.push(currentInterrupt);
+  document.getElementById('mInterrupts').textContent = interrupts.length;
+
+  // Stop audio
+  stopAllAudio();
+  suppressBoardItems = true;
+
+  // Always keep the partially-typed element (no line deletion)
+  cancelTypewriter(false);
+
+  // Rollback only queue + streaming items (typewriter item stays — already partially visible)
+  let rollbackIndex = null;
+
+  // Undisplayed items: remove from DOM and tell backend to rollback
+  displayQueue.forEach(q => {
+    if (rollbackIndex === null || q.index < rollbackIndex) rollbackIndex = q.index;
+    q.el.remove();
+  });
+  displayQueue = [];
+
+  if (currentStreamingItem) {
+    if (rollbackIndex === null || currentStreamingItem.index < rollbackIndex) {
+      rollbackIndex = currentStreamingItem.index;
+    }
+    if (currentStreamingItem.el) currentStreamingItem.el.remove();
+  }
+  currentStreamingItem = null;
+  lessonCompleteDeferred = false;
+  aiResponseAudioEnd = 0;
+  if (displayCheckTimer) { clearTimeout(displayCheckTimer); displayCheckTimer = null; }
+
+  // Send interrupt to backend (with rollback index if items were undisplayed)
+  const interruptMsg = { type: 'interrupt' };
+  if (rollbackIndex !== null) interruptMsg.rollback_to_index = rollbackIndex;
+  ws.send(JSON.stringify(interruptMsg));
+
+  // Start STT
+  listenStartTime = performance.now();  // fallback — don't wait for backend state_change
+  finalTranscript = '';
+  latestInterim = '';
+  heardSpeechEnergy = false;
+  lastSpeechEnergyAt = 0;
+  speechNoTranscriptStreak = 0;
+  startDeepgramSTT();
+  micBtn.classList.add('listening');
+  vadLabel.textContent = 'Dinleniyor...';
+}
+
+// ─── Deepgram STT ───
+async function startDeepgramSTT() {
+  if (dgSocket || dgConnecting) return;
+  if (!micStream) return;
+
+  dgConnecting = true;
+  console.log('[STT] Starting Deepgram STT...');
+  setSttLive('Dinleniyor...');
+  setSttStatus('Dinleniyor');
+  if (currentInterrupt) currentInterrupt.sttStartTime = performance.now();
+
+  try {
+    const resp = await fetch('/api/deepgram-token');
+    const { key } = await resp.json();
+
+    // Abort if cancelled during token fetch (stopDeepgramSTT was called)
+    if (!dgConnecting) {
+      console.log('[STT] Connection cancelled during token fetch');
+      return;
+    }
+
+    console.log('[STT] Token received, key length:', key?.length);
+
+    if (!key) {
+      console.error('[STT] Empty Deepgram API key!');
+      vadLabel.textContent = 'STT: API key eksik';
+      dgConnecting = false;
+      return;
+    }
+
+    // Raw PCM: tell Deepgram the encoding and sample rate
+    const sampleRate = micAudioCtx ? micAudioCtx.sampleRate : 48000;
+    const dgUrl = `wss://api.deepgram.com/v1/listen?model=nova-2&language=tr&punctuate=true&interim_results=true&encoding=linear16&sample_rate=${sampleRate}`;
+    dgSocket = new WebSocket(dgUrl, ['token', key]);
+
+    dgSocket.onopen = () => {
+      dgConnecting = false;
+      vadLabel.textContent = 'Dinleniyor...';
+      setSttLive('Dinleniyor...');
+      setSttStatus('Dinleniyor');
+
+      // Flush entire ring buffer to Deepgram (last 3s of audio — captures speech onset no matter how early)
+      if (pcmRingBuffer) {
+        const ringAudio = extractRingBuffer();
+        const ringInt16 = float32ToInt16(ringAudio);
+        dgSocket.send(ringInt16.buffer);
+        const sampleRate = micAudioCtx ? micAudioCtx.sampleRate : 48000;
+        const totalMs = Math.round(ringAudio.length / sampleRate * 1000);
+        const peakVal = ringAudio.reduce((m, v) => Math.max(m, Math.abs(v)), 0);
+        console.log('[STT] Deepgram connected, flushed', totalMs + 'ms ring buffer',
+          '(' + ringAudio.length + ' samples)', 'peak:', peakVal.toFixed(5));
+      }
+
+      // Start live PCM streaming (continues seamlessly after ring buffer)
+      pcmCapturing = true;
+    };
+
+    dgSocket.onmessage = (e) => {
+      const data = JSON.parse(e.data);
+      console.log('[STT] Message:', JSON.stringify(data).substring(0, 200));
+      const transcript = data.channel?.alternatives?.[0]?.transcript || '';
+      const isFinal = data.is_final;
+
+      if (transcript) {
+        console.log('[STT] Transcript:', transcript, 'isFinal:', isFinal);
+        if (isFinal) {
+          finalTranscript += (finalTranscript ? ' ' : '') + transcript;
+          removeInterimMsg();
+          if (currentInterrupt && !currentInterrupt.sttEndTime) {
+            currentInterrupt.sttEndTime = performance.now();
+          }
+          latestInterim = '';
+          updateInterimMsg(finalTranscript);
+        } else {
+          latestInterim = transcript;
+          updateInterimMsg(finalTranscript + (finalTranscript ? ' ' : '') + transcript);
+        }
+      } else if (sttLive && sttLive.textContent === '-') {
+        setSttLive('Dinleniyor...');
+        setSttStatus('Dinleniyor');
+      }
+    };
+
+    dgSocket.onerror = (e) => {
+      console.error('[STT] Deepgram WebSocket error:', e);
+      vadLabel.textContent = 'STT hata!';
+      dgConnecting = false;
+    };
+
+    dgSocket.onclose = (e) => {
+      console.log('[STT] Deepgram WebSocket closed, code:', e.code, 'reason:', e.reason);
+      dgSocket = null;
+      dgConnecting = false;
+    };
+  } catch(e) {
+    console.error('[STT] Deepgram setup error:', e);
+    vadLabel.textContent = 'STT baglanti hatasi';
+    dgConnecting = false;
+  }
+}
+
+function stopDeepgramSTT() {
+  dgConnecting = false;  // Cancel any pending startDeepgramSTT token fetch
+  micBtn.classList.remove('listening');
+  setSttLive('-');
+  setSttStatus('Kapali');
+
+  // Stop live PCM streaming
+  pcmCapturing = false;
+
+  if (dgSocket) {
+    if (dgSocket.readyState === WebSocket.OPEN) {
+      dgSocket.send(JSON.stringify({ type: 'CloseStream' }));
+    }
+    dgSocket.close();  // Close regardless of state (CONNECTING, OPEN, etc.)
+    dgSocket = null;
+  }
+}
+
+// ─── Interrupt metrics table ───
+function updateInterruptTable() {
+  const section = document.getElementById('interruptSection');
+  const tbody = document.getElementById('interruptBody');
+  section.style.display = '';
+  tbody.innerHTML = '';
+
+  let totalSpeed = 0;
+  let speedCount = 0;
+
+  interrupts.forEach((intr, i) => {
+    const speed = intr.interruptSpeed ? Math.round(intr.interruptSpeed) : '-';
+    const sttMs = (intr.sttStartTime && intr.sttEndTime) ? Math.round(intr.sttEndTime - intr.sttStartTime) : '-';
+    const llm = intr.llmMs != null ? intr.llmMs : '-';
+
+    let badge = '';
+    if (typeof speed === 'number') {
+      totalSpeed += speed;
+      speedCount++;
+      const cls = speed < 500 ? 'fast' : speed <= 1000 ? 'ok' : 'slow';
+      const label = speed < 500 ? 'GEÇTİ ✅' : speed <= 1000 ? 'KISMI ⚠️' : 'BAŞARISIZ ❌';
+      badge = `<span class="speed-badge ${cls}">${label}</span>`;
+    }
+
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${i + 1}</td>
+      <td>${intr.interruptedItem != null ? intr.interruptedItem : '-'}</td>
+      <td>${typeof speed === 'number' ? speed + 'ms' : '-'}</td>
+      <td>${typeof sttMs === 'number' ? sttMs + 'ms' : '-'}</td>
+      <td>${typeof llm === 'number' ? llm + 'ms' : '-'}</td>
+      <td>${badge}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  if (speedCount > 0) {
+    const avg = Math.round(totalSpeed / speedCount);
+    document.getElementById('mAvgInterrupt').textContent = avg + 'ms';
+    document.getElementById('mAvgInterrupt').style.color =
+      avg < 500 ? 'var(--green)' : avg <= 1000 ? 'var(--yellow)' : 'var(--red)';
+  }
+}
+
+// ─── Controls ───
+function resetUI() {
+  // Cancel typewriter
+  cancelTypewriter();
+
+  // Clear display queue
+  displayQueue = [];
+  currentStreamingItem = null;
+  lessonCompleteDeferred = false;
+  if (displayCheckTimer) { clearTimeout(displayCheckTimer); displayCheckTimer = null; }
+
+  // Stop audio
+  stopAllAudio();
+
+  // Clear board
+  board.innerHTML = '';
+
+  // Reset audio context
+  if (audioCtx) { audioCtx.close(); audioCtx = null; masterGain = null; }
+  globalNextStartTime = 0;
+  audioSources = [];
+
+  // Reset state
+  allItems = [];
+  currentState = 'IDLE';
+  stateBar.className = 'state-bar IDLE';
+  stateLabel.textContent = 'IDLE';
+  stateTimer.textContent = '0ms';
+  sessionT0 = null;
+  listenStartTime = null;
+
+  // Reset interrupt metrics
+  interrupts = [];
+  currentInterrupt = null;
+
+  // Reset UI elements
+  document.getElementById('metricsSection').style.display = 'none';
+  document.getElementById('interruptSection').style.display = 'none';
+  document.getElementById('interruptBody').innerHTML = '';
+  document.getElementById('mLlm').textContent = '-';
+  document.getElementById('mItems').textContent = '-';
+  document.getElementById('mInterrupts').textContent = '0';
+  document.getElementById('mAvgInterrupt').textContent = '-';
+  document.getElementById('mAvgInterrupt').style.color = '';
+
+  // Clear conversation
+  convPanel.innerHTML = '';
+  if (sttLive) sttLive.textContent = '-';
+  if (sttStatus) sttStatus.textContent = 'Beklemede';
+  stateLog.innerHTML = '';
+
+  // Stop mic stuff
+  teardownMic();
+
+  statusDot.className = 'status-dot connected';
+  statusText.textContent = 'Bagli';
+  startBtn.disabled = false;
+}
+
+function startLesson() {
+  const text = questionInput.value.trim();
+  if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+  resetUI();
+  ensureAudioCtx();
+  startBtn.disabled = true;
+  statusDot.className = 'status-dot processing';
+  statusText.textContent = 'LLM yanitlaniyor...';
+  sessionT0 = performance.now();
+
+  document.getElementById('metricsSection').style.display = '';
+
+  ws.send(JSON.stringify({ type: 'start_lesson', text, speed }));
+
+  // Auto-enable mic
+  setupMic();
+}
+
+// ─── Event listeners ───
+startBtn.addEventListener('click', startLesson);
+resetBtn.addEventListener('click', resetUI);
+questionInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey && !startBtn.disabled) {
+    e.preventDefault();
+    startLesson();
+  }
+});
+
+micBtn.addEventListener('click', () => {
+  if (micActive) {
+    teardownMic();
+  } else {
+    setupMic();
+  }
+});
+
+connectWS();
+</script>
+</body>
+</html>

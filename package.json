@@ -1,0 +1,15 @@
+{
+  "name": "myteacher",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --filter server dev & pnpm --filter client dev",
+    "build": "pnpm --filter shared build && pnpm --filter server build && pnpm --filter client build",
+    "build:shared": "pnpm --filter shared build"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
