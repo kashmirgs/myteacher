@@ -9,6 +9,7 @@ import { Controls } from "./components/Controls";
 
 export function App() {
   const [boardItems, setBoardItems] = useState<BoardItem[]>([]);
+  const [revealedCount, setRevealedCount] = useState(0);
   const [sessionState, setSessionState] = useState<SessionState>("idle");
   const [transcript, setTranscript] = useState("");
   const [aiResponse, setAiResponse] = useState("");
@@ -22,12 +23,26 @@ export function App() {
 
   const audioPlayer = useAudioPlayer();
 
+  // Request mic permission early so the browser prompt appears on page load
+  useEffect(() => {
+    navigator.mediaDevices.getUserMedia({ audio: true })
+      .then(stream => {
+        stream.getTracks().forEach(t => t.stop());
+        audioPlayer.warmUp();
+      })
+      .catch(() => {});
+  }, [audioPlayer]);
+
   // Message handler is called synchronously from ws.onmessage via a ref,
   // so every message is processed — no React 18 batching drops.
   const { send, sendBinary, isConnected } = useSocket((msg: ServerMessage) => {
     switch (msg.type) {
       case "board_update":
         setBoardItems(msg.items);
+        setRevealedCount(0);
+        break;
+      case "board_reveal":
+        setRevealedCount(msg.index + 1);
         break;
       case "state_change":
         setSessionState(msg.state);
@@ -119,6 +134,10 @@ export function App() {
     }
   }, [isOpen, start, close, vadDetach, audioPlayer]);
 
+  const handleGenerateLesson = useCallback((topic: string) => {
+    send({ type: "generate_lesson", topic });
+  }, [send]);
+
   const handleAnnotationClick = useCallback(
     (index: number) => {
       send({
@@ -136,7 +155,7 @@ export function App() {
         <h1>MyTeacher</h1>
       </header>
       <main className="app-main">
-        <Whiteboard items={boardItems} onAnnotationClick={handleAnnotationClick} />
+        <Whiteboard items={boardItems} revealedCount={revealedCount} onAnnotationClick={handleAnnotationClick} />
       </main>
       <aside className="app-sidebar">
         <Controls
@@ -144,6 +163,7 @@ export function App() {
           sessionState={sessionState}
           isOpen={isOpen}
           onMicToggle={handleMicToggle}
+          onGenerateLesson={handleGenerateLesson}
           transcript={transcript}
           aiResponse={aiResponse}
         />

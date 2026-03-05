@@ -63,6 +63,11 @@ describe('SessionStateMachine', () => {
       expect(sm.getState()).toBe('idle');
     });
 
+    it('idle → processing (for generate_lesson)', () => {
+      expect(sm.transition('processing')).toBe(true);
+      expect(sm.getState()).toBe('processing');
+    });
+
     it('sends state_change message on valid transition', () => {
       sm.transition('listening');
       expect(send).toHaveBeenCalledWith({
@@ -75,10 +80,6 @@ describe('SessionStateMachine', () => {
   // ── Invalid transitions ──
 
   describe('invalid transitions', () => {
-    it('idle → processing', () => {
-      expect(sm.transition('processing')).toBe(false);
-      expect(sm.getState()).toBe('idle');
-    });
 
     it('idle → speaking', () => {
       expect(sm.transition('speaking')).toBe(false);
@@ -111,7 +112,7 @@ describe('SessionStateMachine', () => {
 
     it('does not send state_change on invalid transition', () => {
       send.mockClear();
-      sm.transition('processing'); // invalid from idle
+      sm.transition('speaking'); // invalid from idle
       expect(send).not.toHaveBeenCalled();
     });
   });

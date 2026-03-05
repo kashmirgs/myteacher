@@ -10,6 +10,8 @@ export interface STTCallbacks {
 export interface STTService {
   start(callbacks: STTCallbacks): void;
   feedAudio(chunk: Buffer): void;
+  /** Capture WebM init segment from audio chunk without feeding to Deepgram */
+  saveHeader(chunk: Buffer): void;
   stop(): void;
 }
 
@@ -150,14 +152,27 @@ export function createSTTService(): STTService {
       }, 5000);
     },
 
+    saveHeader(chunk: Buffer) {
+      if (webmHeader) return;
+      const ab = new Uint8Array(chunk).buffer as ArrayBuffer;
+      const candidate = extractInitSegment(ab);
+      if (candidate.byteLength > 0) {
+        webmHeader = candidate;
+        console.log('[stt] webm init segment saved (%d bytes, stripped from %d)', webmHeader.byteLength, ab.byteLength);
+      }
+    },
+
     feedAudio(chunk: Buffer) {
       if (!connection) return;
       const ab = new Uint8Array(chunk).buffer as ArrayBuffer;
 
       // Save the init segment (EBML + Tracks, no audio) from the first chunk
       if (!webmHeader) {
-        webmHeader = extractInitSegment(ab);
-        console.log('[stt] webm init segment saved (%d bytes, stripped from %d)', webmHeader.byteLength, ab.byteLength);
+        const candidate = extractInitSegment(ab);
+        if (candidate.byteLength > 0) {
+          webmHeader = candidate;
+          console.log('[stt] webm init segment saved (%d bytes, stripped from %d)', webmHeader.byteLength, ab.byteLength);
+        }
       }
 
       if (isReady) {

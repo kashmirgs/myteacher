@@ -6,10 +6,11 @@ import type { LLMService, LLMStreamCallbacks, LLMStreamHandle } from "../service
 
 // ── Type aliases for augmented mocks ──
 
-export type MockSTT = Omit<STTService, "start" | "feedAudio" | "stop"> & {
+export type MockSTT = Omit<STTService, "start" | "feedAudio" | "saveHeader" | "stop"> & {
   _startCb: STTCallbacks | null;
   start: ReturnType<typeof vi.fn>;
   feedAudio: ReturnType<typeof vi.fn>;
+  saveHeader: ReturnType<typeof vi.fn>;
   stop: ReturnType<typeof vi.fn>;
 };
 export type MockTTS = Omit<TTSService, "streamTTS" | "openStream" | "stop"> & {
@@ -42,6 +43,7 @@ export function createMockSTT(): MockSTT {
       this._startCb = cb;
     }),
     feedAudio: vi.fn(),
+    saveHeader: vi.fn(),
     stop: vi.fn(),
   };
 }

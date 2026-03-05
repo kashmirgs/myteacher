@@ -5,6 +5,8 @@ import { createGeminiLLMService } from './gemini.js';
 
 /** LLM service — real Anthropic API for speech responses, placeholder for board generation */
 
+export type LessonBoardItem = BoardItem & { speech?: string };
+
 export interface LLMStreamCallbacks {
   onToken(delta: string, snapshot: string): void;
   onDone(fullText: string): void;
@@ -16,7 +18,7 @@ export interface LLMStreamHandle {
 }
 
 export interface LLMService {
-  generateLesson(topic: string): Promise<BoardItem[]>;
+  generateLesson(topic: string): Promise<LessonBoardItem[]>;
   generateSpeechResponse(transcript: string): Promise<string>;
   streamSpeechResponse(transcript: string, callbacks: LLMStreamCallbacks): LLMStreamHandle;
   answerAnnotation(
@@ -26,15 +28,6 @@ export interface LLMService {
   ): Promise<string>;
 }
 
-export const PLACEHOLDER_BOARD: BoardItem[] = [
-  { type: 'title', text: 'Toplama İşlemi' },
-  { type: 'text', text: 'Toplama, iki veya daha fazla sayıyı birleştirme işlemidir.' },
-  { type: 'formula', text: '3 + 5 = 8\n12 + 7 = 19' },
-  { type: 'list', items: ['Toplanan sayılara "toplanan" denir', 'Sonuca "toplam" denir', 'Toplama sırası değiştirilebilir'] },
-  { type: 'highlight', text: 'Hatırla: Toplama işleminde sıra fark etmez! 3 + 5 = 5 + 3' },
-];
-
-const PLACEHOLDER_RAW_JSON = JSON.stringify(PLACEHOLDER_BOARD);
 
 export const SPEECH_SYSTEM_PROMPT = `Sen "Öğretmenim" adında, ilkokul çağındaki çocuklara Türkçe ders anlatan sıcak ve sabırlı bir öğretmensin.
 
@@ -45,20 +38,68 @@ Kurallar:
 - Sadece düz metin olarak yanıt ver, markdown veya özel format kullanma.
 - Sayıları rakamla yaz (5, 10 gibi), yazıyla değil.`;
 
+export const LESSON_SYSTEM_PROMPT = 'Sen ilkokul öğretmenisin. Sadece istenen JSON formatında yanıt ver.\nHer eleman için "speech" alanına o elemanın sesli anlatımını yaz (1-2 cümle, konuşma dili).';
+
+export function buildLessonPrompt(topic: string): string {
+  return `Konu: ${topic}
+
+Aşağıdaki JSON formatında bir ders tahtası oluştur. 5-10 arası eleman üret. İlk eleman mutlaka "title" olsun. En az 2 farklı tip kullan.
+
+Örnek format:
+[
+  { "type": "title", "text": "Ders Başlığı", "speech": "Merhaba çocuklar! Bugün ders başlığı konusunu öğreneceğiz." },
+  { "type": "text", "text": "Açıklama metni.", "speech": "Şimdi size açıklama metnini anlatayım." },
+  { "type": "formula", "text": "3 + 5 = 8", "speech": "Bakın, 3 ile 5'i toplarsak 8 eder." },
+  { "type": "list", "items": ["Madde 1", "Madde 2", "Madde 3"], "speech": "Şimdi maddelerimize bakalım." },
+  { "type": "highlight", "text": "Önemli not!", "speech": "Bunu mutlaka hatırlayın çocuklar!" }
+]
+
+Kurallar:
+- Sadece JSON dizisi döndür, başka hiçbir şey yazma.
+- Geçerli tipler: title, text, formula, list, highlight
+- İlkokul seviyesinde, Türkçe açıkla.
+- Sayıları rakamla yaz (5, 10 gibi).
+- Formüllerde çok satır varsa • ile ayır.
+- speech: o item gösterilirken sesli söylenecek metin (1-2 cümle, doğal konuşma dili Türkçe). Her item'da speech olmalı.`;
+}
+
+export const ANNOTATION_SYSTEM_PROMPT = `Sen ilkokul öğretmenisin. Öğrenci tahtadaki bir öğeye tıklayıp soru sordu.
+Kurallar:
+- 1-3 cümle ile yanıtla.
+- Yanıtında tıklanan elemanın içindeki ifadeyi aynen tekrarla.
+- Sayıları rakamla yaz.
+- Çocuklara uygun, basit dil kullan.`;
+
+export function buildAnnotationContext(boardItems: BoardItem[], clickedIndex: number): string {
+  return boardItems.map((item, i) => {
+    const marker = i === clickedIndex ? ' ← İŞARETLENDİ' : '';
+    if (item.type === 'list') return `[${i}] (${item.type}) ${item.items.join(', ')}${marker}`;
+    return `[${i}] (${item.type}) ${item.text}${marker}`;
+  }).join('\n');
+}
+
 function createClaudeLLMService(): LLMService {
   const client = new Anthropic();
 
   return {
-    async generateLesson(topic: string): Promise<BoardItem[]> {
-      console.log(`[llm:claude] generating lesson for: ${topic} (placeholder)`);
+    async generateLesson(topic: string): Promise<LessonBoardItem[]> {
+      console.log(`[llm:claude] generating lesson for: ${topic}`);
 
-      // Placeholder — will be real in Dilim 3
+      const prompt = buildLessonPrompt(topic);
+
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
-          const items = parseBoardItems(PLACEHOLDER_RAW_JSON);
-          return items;
+          const response = await client.messages.create({
+            model: 'claude-sonnet-4-20250514',
+            max_tokens: 2048,
+            system: LESSON_SYSTEM_PROMPT,
+            messages: [{ role: 'user', content: prompt }],
+          });
+          const block = response.content[0];
+          if (block.type !== 'text') throw new Error('Unexpected response type');
+          return parseBoardItems(block.text) as LessonBoardItem[];
         } catch (err) {
-          console.warn(`[llm:claude] attempt ${attempt + 1} failed:`, err);
+          console.warn(`[llm:claude] generateLesson attempt ${attempt + 1} failed:`, err);
           if (attempt === 1) throw err;
         }
       }
@@ -120,14 +161,23 @@ function createClaudeLLMService(): LLMService {
       clickedIndex: number,
       question: string,
     ): Promise<string> {
-      console.log(`[llm:claude] annotation click index=${clickedIndex}, question="${question}" (placeholder)`);
+      console.log(`[llm:claude] annotation click index=${clickedIndex}, question="${question}"`);
 
-      // Placeholder — will be real in Dilim 3
+      const boardContext = buildAnnotationContext(boardItems, clickedIndex);
       const q = question || 'Bu ne demek?';
-      const clicked = boardItems[clickedIndex];
-      const clickedText = clicked.type === 'list' ? clicked.items.join(', ') : clicked.text;
 
-      return `"${clickedText}" hakkında: ${q} — Bu konu şu anlama gelir: ${clickedText} ifadesi temel bir kavramdır.`;
+      const response = await client.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 512,
+        system: ANNOTATION_SYSTEM_PROMPT,
+        messages: [{
+          role: 'user',
+          content: `Tahta içeriği:\n${boardContext}\n\nSoru: ${q}`,
+        }],
+      });
+      const block = response.content[0];
+      if (block.type !== 'text') throw new Error('Unexpected response type');
+      return block.text;
     },
   };
 }

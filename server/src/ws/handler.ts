@@ -2,7 +2,7 @@ import type { WebSocket, RawData } from "ws";
 import type { ClientMessage, ServerMessage, BoardItem } from "@myteacher/shared";
 import { SessionStateMachine } from "../session/state-machine.js";
 import { createSTTService } from "../services/deepgram.js";
-import { createLLMService, type LLMStreamHandle } from "../services/claude.js";
+import { createLLMService, type LLMStreamHandle, type LessonBoardItem } from "../services/claude.js";
 import { createTTSService } from "../services/cartesia.js";
 
 /** Detect clause boundary: `.` `?` `!` followed by space or end-of-string, min 10 chars */
@@ -25,6 +25,7 @@ export function handleConnection(ws: WebSocket): void {
   let sttGeneration = 0;
   let sttActive = false;
   let sttRestartTimer: NodeJS.Timeout | null = null;
+  let revealTimers: NodeJS.Timeout[] = [];
   const sttRestartDelayMs = process.env.NODE_ENV === "test" ? 0 : 350;
   const bargeInSuppressMs = process.env.NODE_ENV === "test" ? 0 : 400;
   const ttsEndSuppressMs = process.env.NODE_ENV === "test" ? 0 : 500;
@@ -199,6 +200,7 @@ export function handleConnection(ws: WebSocket): void {
     // Binary frame = audio data from microphone
     if (isBinary) {
       const buffer = Buffer.isBuffer(raw) ? raw : Buffer.from(raw as ArrayBuffer);
+      stt.saveHeader(buffer); // Always capture WebM header regardless of state
       const state = session.getState();
       if (state === "listening") {
         stt.feedAudio(buffer);
@@ -245,6 +247,8 @@ export function handleConnection(ws: WebSocket): void {
         currentLLMHandle?.abort();
         currentLLMHandle = null;
         tts.stop();
+        revealTimers.forEach(t => clearTimeout(t));
+        revealTimers = [];
         pendingAudio.length = 0;
         if (sttRestartTimer) {
           clearTimeout(sttRestartTimer);
@@ -275,6 +279,8 @@ export function handleConnection(ws: WebSocket): void {
         currentLLMHandle?.abort();
         currentLLMHandle = null;
         tts.stop();
+        revealTimers.forEach(t => clearTimeout(t));
+        revealTimers = [];
         if (state === "speaking") {
           stopSTT();
           // Discard audio buffered during TTS — it contains the barge-in
@@ -291,6 +297,79 @@ export function handleConnection(ws: WebSocket): void {
         // If already listening, STT is active and receiving audio — don't restart it.
         // The client sent barge_in because its audio buffer was still draining,
         // but the server already transitioned via onEnd.
+        break;
+      }
+
+      case "generate_lesson": {
+        console.log(`[handler] generate_lesson topic="${msg.topic}"`);
+        if (!session.transition("processing")) break;
+
+        let lessonItems: LessonBoardItem[];
+        try {
+          lessonItems = await llm.generateLesson(msg.topic);
+        } catch (err) {
+          send({ type: "error", message: err instanceof Error ? err.message : "lesson generation failed" });
+          session.transition("idle");
+          break;
+        }
+
+        // Extract speeches, store clean board items
+        const speeches = lessonItems.map(it => (it as any).speech || it.text || "");
+        boardItems = lessonItems.map(it => {
+          const { speech, ...rest } = it as any;
+          return rest as BoardItem;
+        });
+
+        send({ type: "board_update", items: boardItems });
+        send({ type: "board_reveal", index: 0 }); // title immediately
+
+        const gen = ++llmGeneration;
+
+        // Open TTS stream
+        const ttsHandle = tts.openStream({
+          onStart: () => {},
+          onChunk: (audio) => {
+            if (gen !== llmGeneration) return;
+            send({ type: "tts_chunk", audio });
+          },
+          onEnd: () => {
+            if (session.getState() !== "speaking") return;
+            send({ type: "tts_end" });
+            session.transition("listening");
+            suppressTranscriptsUntil = performance.now() + ttsEndSuppressMs;
+            scheduleSTTStart(ttsEndSTTDelayMs);
+            pendingAudio.length = 0;
+          },
+        });
+
+        if (!session.transition("speaking")) break;
+
+        // Send full transcript
+        const fullSpeech = speeches.filter(Boolean).join(" ");
+        send({ type: "transcript", text: fullSpeech, isFinal: true });
+
+        // Per-item TTS feeding + setTimeout reveal pacing
+        const MS_PER_CHAR = 65;
+        let cumulativeDelay = 0;
+
+        for (let i = 0; i < lessonItems.length; i++) {
+          const speech = speeches[i];
+          if (!speech) continue;
+
+          if (i > 0) {
+            const delay = cumulativeDelay;
+            revealTimers.push(setTimeout(() => {
+              if (gen !== llmGeneration) return;
+              send({ type: "board_reveal", index: i });
+            }, delay));
+          }
+
+          const isLast = speeches.slice(i + 1).every(s => !s) || i === lessonItems.length - 1;
+          ttsHandle.feed(speech + " ", isLast);
+          cumulativeDelay += speech.length * MS_PER_CHAR;
+        }
+
+        currentLLMHandle = null; // no LLM stream to track
         break;
       }
 
@@ -323,6 +402,8 @@ export function handleConnection(ws: WebSocket): void {
     currentLLMHandle?.abort();
     currentLLMHandle = null;
     if (sttRestartTimer) clearTimeout(sttRestartTimer);
+    revealTimers.forEach(t => clearTimeout(t));
+    revealTimers = [];
     stopSTT();
     sttGeneration++;
     tts.stop();

@@ -22,13 +22,15 @@ export type ClientMessage =
   | { type: "start_listening" }
   | { type: "stop_listening"; reason?: string; source?: string }
   | { type: "barge_in" }
-  | { type: "annotation_click"; index: number; question: string };
+  | { type: "annotation_click"; index: number; question: string }
+  | { type: "generate_lesson"; topic: string };
 
 // ── Server → Client Messages ──
 
 export type ServerMessage =
   | { type: "transcript"; text: string; isFinal: boolean }
   | { type: "board_update"; items: BoardItem[] }
+  | { type: "board_reveal"; index: number }
   | { type: "tts_chunk"; audio: string } // base64 audio
   | { type: "tts_start" }
   | { type: "tts_end" }

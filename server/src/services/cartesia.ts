@@ -50,6 +50,7 @@ export function createTTSService(): TTSService {
 
   return {
     streamTTS(text, callbacks) {
+      cleanup(); // Close previous stream before opening new one
       active = true;
       const contextId = randomUUID();
       currentContextId = contextId;
@@ -86,7 +87,7 @@ export function createTTSService(): TTSService {
       let chunkCount = 0;
 
       ws.on('message', (data) => {
-        if (!active) return;
+        if (!active || currentContextId !== contextId) return;
 
         try {
           const msg = JSON.parse(data.toString());
@@ -116,6 +117,7 @@ export function createTTSService(): TTSService {
 
       ws.on('error', (err) => {
         console.error('[tts] cartesia ws error:', err);
+        if (currentContextId !== contextId) return;
         if (active) {
           active = false;
           callbacks.onEnd();
@@ -125,6 +127,7 @@ export function createTTSService(): TTSService {
 
       ws.on('close', () => {
         console.log('[tts] cartesia websocket closed');
+        if (currentContextId !== contextId) return;
         if (active) {
           active = false;
           callbacks.onEnd();
@@ -133,6 +136,7 @@ export function createTTSService(): TTSService {
     },
 
     openStream(callbacks: TTSCallbacks): TTSStreamHandle {
+      cleanup(); // Close previous stream before opening new one
       active = true;
       const contextId = randomUUID();
       currentContextId = contextId;
@@ -172,7 +176,7 @@ export function createTTSService(): TTSService {
       });
 
       ws.on('message', (data) => {
-        if (!active) return;
+        if (!active || currentContextId !== contextId) return;
         try {
           const msg = JSON.parse(data.toString());
           if (msg.context_id !== contextId) return;
@@ -198,6 +202,7 @@ export function createTTSService(): TTSService {
 
       ws.on('error', (err) => {
         console.error('[tts] cartesia ws error:', err);
+        if (currentContextId !== contextId) return;
         if (active) {
           active = false;
           callbacks.onEnd();
@@ -207,6 +212,7 @@ export function createTTSService(): TTSService {
 
       ws.on('close', () => {
         console.log('[tts] cartesia websocket closed');
+        if (currentContextId !== contextId) return;
         if (active) {
           active = false;
           callbacks.onEnd();

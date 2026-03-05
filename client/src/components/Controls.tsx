@@ -5,6 +5,7 @@ interface ControlsProps {
   sessionState: SessionState;
   isOpen: boolean;
   onMicToggle: () => void;
+  onGenerateLesson: (topic: string) => void;
   transcript: string;
   aiResponse: string;
 }
@@ -28,6 +29,7 @@ export function Controls({
   sessionState,
   isOpen,
   onMicToggle,
+  onGenerateLesson,
   transcript,
   aiResponse,
 }: ControlsProps) {
@@ -50,6 +52,18 @@ export function Controls({
         />
         <span className="state-label">{STATE_LABELS[sessionState]}</span>
       </div>
+
+      <form className="lesson-form" onSubmit={(e) => {
+        e.preventDefault();
+        const input = e.currentTarget.elements.namedItem('topic') as HTMLInputElement;
+        if (input.value.trim()) {
+          onGenerateLesson(input.value.trim());
+          input.value = '';
+        }
+      }}>
+        <input name="topic" placeholder="Konu gir..." disabled={!isConnected || sessionState === 'processing' || sessionState === 'speaking'} />
+        <button type="submit" disabled={!isConnected || sessionState === 'processing' || sessionState === 'speaking'}>Ders Oluştur</button>
+      </form>
 
       <button
         className={`mic-button ${isOpen ? 'recording' : ''}`}

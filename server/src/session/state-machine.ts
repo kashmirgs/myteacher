@@ -3,7 +3,7 @@ import type { SessionState, ServerMessage } from '@myteacher/shared';
 type SendFn = (msg: ServerMessage) => void;
 
 const VALID_TRANSITIONS: Record<SessionState, SessionState[]> = {
-  idle: ['listening'],
+  idle: ['listening', 'processing'],
   listening: ['processing', 'idle'],
   processing: ['speaking', 'idle'],
   speaking: ['listening', 'idle'],
