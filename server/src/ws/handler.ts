@@ -4,6 +4,7 @@ import { SessionStateMachine } from "../session/state-machine.js";
 import { createSTTService } from "../services/deepgram.js";
 import { createLLMService, type LLMStreamHandle, type LessonBoardItem } from "../services/claude.js";
 import { createTTSService } from "../services/cartesia.js";
+import { ConversationHistory } from "../services/conversation.js";
 
 /** Detect clause boundary: `.` `?` `!` followed by space or end-of-string, min 10 chars */
 function extractClause(buffer: string): { clause: string; remaining: string } | null {
@@ -34,6 +35,11 @@ export function handleConnection(ws: WebSocket): void {
   const stopAfterBargeInMs = 1000;
   let lastBargeInAt = 0;
 
+  // Lesson narration state – enables resume after barge-in Q&A
+  let lessonSpeeches: string[] = [];
+  let isLessonNarrating = false;
+  let lastRevealedIdx = 0;
+
   const send = (msg: ServerMessage) => {
     if (ws.readyState === ws.OPEN) {
       ws.send(JSON.stringify(msg));
@@ -44,6 +50,7 @@ export function handleConnection(ws: WebSocket): void {
   const stt = createSTTService();
   const llm = createLLMService();
   const tts = createTTSService();
+  const history = new ConversationHistory();
 
   /** Start a speech response cycle: streaming LLM → clause-based TTS → back to listening */
   function handleFinalTranscript(text: string) {
@@ -82,6 +89,11 @@ export function handleConnection(ws: WebSocket): void {
       },
       onEnd: () => {
         if (session.getState() !== "speaking") return;
+        if (isLessonNarrating) {
+          console.log(`[handler] Q&A TTS ended, resuming lesson from idx ${lastRevealedIdx + 1}`);
+          resumeLesson(lastRevealedIdx + 1);
+          return;
+        }
         send({ type: "tts_end" });
         session.transition("listening");
         suppressTranscriptsUntil = performance.now() + ttsEndSuppressMs;
@@ -90,7 +102,17 @@ export function handleConnection(ws: WebSocket): void {
       },
     });
 
-    currentLLMHandle = llm.streamSpeechResponse(text, {
+    // When a lesson is being narrated, tell the LLM to keep its answer
+    // short — the system will automatically resume the lesson afterwards.
+    if (isLessonNarrating) {
+      history.addUserMessage(
+        `[Sistem: Ders anlatımı devam ediyor. Çok kısa cevap ver (1 cümle). Dersi sen anlatma, sistem otomatik devam edecek.]\n${text}`,
+      );
+    } else {
+      history.addUserMessage(text);
+    }
+
+    currentLLMHandle = llm.streamSpeechResponse(text, history, {
       onToken(delta, snapshot) {
         if (gen !== llmGeneration) return;
         if (firstToken) {
@@ -122,6 +144,7 @@ export function handleConnection(ws: WebSocket): void {
 
       onDone(fullText) {
         if (gen !== llmGeneration) return;
+        history.addAssistantMessage(fullText);
         send({ type: "transcript", text: fullText, isFinal: true });
 
         if (firstClause) {
@@ -196,6 +219,73 @@ export function handleConnection(ws: WebSocket): void {
     }, delayMs);
   }
 
+  /** Resume lesson narration from a given speech index after a barge-in Q&A. */
+  function resumeLesson(fromIdx: number) {
+    const remaining = lessonSpeeches.slice(fromIdx);
+    if (remaining.every(s => !s)) {
+      isLessonNarrating = false;
+      session.transition("listening");
+      suppressTranscriptsUntil = performance.now() + ttsEndSuppressMs;
+      scheduleSTTStart(ttsEndSTTDelayMs);
+      pendingAudio.length = 0;
+      return;
+    }
+
+    const remainingNonEmpty = remaining.filter(Boolean);
+    console.log(`[handler] resuming lesson from index ${fromIdx}/${lessonSpeeches.length}, ${remainingNonEmpty.length} non-empty speeches remaining`);
+    const gen = ++llmGeneration;
+
+    // No tts_start — client audio player is still in playing mode from the Q&A response.
+    // This avoids flush()/start() which could disrupt the audio pipeline.
+
+    const ttsHandle = tts.openStream({
+      onStart: () => {},
+      onChunk: (audio) => {
+        if (gen !== llmGeneration) return;
+        send({ type: "tts_chunk", audio });
+      },
+      onEnd: () => {
+        if (gen !== llmGeneration) return;
+        if (session.getState() !== "speaking") return;
+        console.log(`[handler] resumed lesson TTS ended, lesson narration complete`);
+        isLessonNarrating = false;
+        send({ type: "tts_end" });
+        session.transition("listening");
+        suppressTranscriptsUntil = performance.now() + ttsEndSuppressMs;
+        scheduleSTTStart(ttsEndSTTDelayMs);
+        pendingAudio.length = 0;
+      },
+    });
+
+    send({ type: "transcript", text: remainingNonEmpty.join(" "), isFinal: true });
+
+    const MS_PER_CHAR = 65;
+    let cumulativeDelay = 0;
+
+    for (let i = fromIdx; i < lessonSpeeches.length; i++) {
+      const speech = lessonSpeeches[i];
+      if (!speech) continue;
+
+      if (cumulativeDelay > 0) {
+        const delay = cumulativeDelay;
+        revealTimers.push(setTimeout(() => {
+          if (gen !== llmGeneration) return;
+          lastRevealedIdx = i;
+          console.log(`[handler] board_reveal index=${i} (resumed, delayed)`);
+          send({ type: "board_reveal", index: i });
+        }, delay));
+      } else {
+        lastRevealedIdx = i;
+        console.log(`[handler] board_reveal index=${i} (resumed, immediate)`);
+        send({ type: "board_reveal", index: i });
+      }
+
+      const isLast = lessonSpeeches.slice(i + 1).every(s => !s) || i === lessonSpeeches.length - 1;
+      ttsHandle.feed(speech + " ", isLast);
+      cumulativeDelay += speech.length * MS_PER_CHAR;
+    }
+  }
+
   ws.on("message", async (raw: RawData, isBinary: boolean) => {
     // Binary frame = audio data from microphone
     if (isBinary) {
@@ -222,6 +312,10 @@ export function handleConnection(ws: WebSocket): void {
     switch (msg.type) {
       case "start_listening": {
         console.log("[handler] start_listening received");
+        if (session.getState() !== "idle") {
+          console.log(`[handler] start_listening ignored (state=${session.getState()})`);
+          break;
+        }
         suppressTranscriptsUntil = 0;
         if (!session.transition("listening")) break;
         startSTT();
@@ -255,6 +349,8 @@ export function handleConnection(ws: WebSocket): void {
           sttRestartTimer = null;
         }
         stopSTT();
+        isLessonNarrating = false;
+        lessonSpeeches = [];
         session.transition("idle");
         break;
       }
@@ -268,7 +364,7 @@ export function handleConnection(ws: WebSocket): void {
 
       case "barge_in": {
         const state = session.getState();
-        console.log("[handler] barge_in received, state=", state);
+        console.log("[handler] barge_in received, state=", state, "isLessonNarrating=", isLessonNarrating, "lastRevealedIdx=", lastRevealedIdx);
         lastBargeInAt = performance.now();
         if (state === "listening") {
           console.log("[handler] barge_in ignored (already listening)");
@@ -320,20 +416,32 @@ export function handleConnection(ws: WebSocket): void {
           return rest as BoardItem;
         });
 
+        lessonSpeeches = speeches;
+        isLessonNarrating = true;
+        lastRevealedIdx = 0;
+
+        history.addBoardEvent(boardItems);
         send({ type: "board_update", items: boardItems });
         send({ type: "board_reveal", index: 0 }); // title immediately
 
         const gen = ++llmGeneration;
 
         // Open TTS stream
+        let firstLessonChunk = true;
         const ttsHandle = tts.openStream({
           onStart: () => {},
           onChunk: (audio) => {
             if (gen !== llmGeneration) return;
+            if (firstLessonChunk) {
+              console.log('[handler] first tts_chunk sent to client');
+              firstLessonChunk = false;
+            }
             send({ type: "tts_chunk", audio });
           },
           onEnd: () => {
+            if (gen !== llmGeneration) return;
             if (session.getState() !== "speaking") return;
+            isLessonNarrating = false;
             send({ type: "tts_end" });
             session.transition("listening");
             suppressTranscriptsUntil = performance.now() + ttsEndSuppressMs;
@@ -351,6 +459,8 @@ export function handleConnection(ws: WebSocket): void {
         // Per-item TTS feeding + setTimeout reveal pacing
         const MS_PER_CHAR = 65;
         let cumulativeDelay = 0;
+        const feedableSpeeches = speeches.filter(Boolean);
+        console.log(`[handler] lesson speeches: ${feedableSpeeches.length}/${speeches.length} non-empty, total chars=${feedableSpeeches.join(' ').length}`);
 
         for (let i = 0; i < lessonItems.length; i++) {
           const speech = speeches[i];
@@ -360,6 +470,7 @@ export function handleConnection(ws: WebSocket): void {
             const delay = cumulativeDelay;
             revealTimers.push(setTimeout(() => {
               if (gen !== llmGeneration) return;
+              lastRevealedIdx = i;
               send({ type: "board_reveal", index: i });
             }, delay));
           }
@@ -383,7 +494,10 @@ export function handleConnection(ws: WebSocket): void {
         }
 
         try {
-          const answer = await llm.answerAnnotation(boardItems, msg.index, msg.question || "Bu ne demek?");
+          const q = msg.question || "Bu ne demek?";
+          const answer = await llm.answerAnnotation(boardItems, msg.index, q, history);
+          history.addUserMessage(q);
+          history.addAssistantMessage(answer);
           send({ type: "transcript", text: answer, isFinal: true });
         } catch (err) {
           send({
@@ -407,6 +521,8 @@ export function handleConnection(ws: WebSocket): void {
     stopSTT();
     sttGeneration++;
     tts.stop();
+    isLessonNarrating = false;
+    lessonSpeeches = [];
     session.reset();
   });
 }

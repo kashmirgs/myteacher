@@ -152,7 +152,7 @@ describe("handleConnection", () => {
       await vi.waitFor(() => expect(mockTTS.openStream).toHaveBeenCalled());
 
       expect(mockSTT.stop).toHaveBeenCalled();
-      expect(mockLLM.streamSpeechResponse).toHaveBeenCalledWith("Merhaba", expect.any(Object));
+      expect(mockLLM.streamSpeechResponse).toHaveBeenCalledWith("Merhaba", expect.any(Object), expect.any(Object));
 
       // The mock emits "Mocked LLM response" as a single token — no clause boundary
       // detected (no `.?!` followed by space), so full text is fed to TTS in onDone
@@ -170,6 +170,7 @@ describe("handleConnection", () => {
       (mockLLM.streamSpeechResponse as ReturnType<typeof vi.fn>).mockImplementationOnce(function (
         this: MockLLM,
         _transcript: string,
+        _history: unknown,
         callbacks: { onError: (err: Error) => void },
       ) {
         queueMicrotask(() => {
@@ -265,6 +266,7 @@ describe("handleConnection", () => {
       (mockLLM.streamSpeechResponse as ReturnType<typeof vi.fn>).mockImplementationOnce(function (
         this: MockLLM,
         _transcript: string,
+        _history: unknown,
         callbacks: LLMStreamCallbacks,
       ) {
         this._streamCb = callbacks;
@@ -304,6 +306,7 @@ describe("handleConnection", () => {
       (mockLLM.streamSpeechResponse as ReturnType<typeof vi.fn>).mockImplementationOnce(function (
         this: MockLLM,
         _transcript: string,
+        _history: unknown,
         callbacks: LLMStreamCallbacks,
       ) {
         this._streamCb = callbacks;
@@ -413,6 +416,7 @@ describe("handleConnection", () => {
       (mockLLM.streamSpeechResponse as ReturnType<typeof vi.fn>).mockImplementationOnce(function (
         this: MockLLM,
         _transcript: string,
+        _history: unknown,
         _callbacks: unknown,
       ) {
         // Don't call any callbacks — simulates LLM still processing
@@ -482,6 +486,7 @@ describe("handleConnection", () => {
       (mockLLM.streamSpeechResponse as ReturnType<typeof vi.fn>).mockImplementationOnce(function (
         this: MockLLM,
         _transcript: string,
+        _history: unknown,
         callbacks: LLMStreamCallbacks,
       ) {
         this._streamCb = callbacks;
@@ -506,6 +511,169 @@ describe("handleConnection", () => {
       expect(ws.sentOfType("state_change").at(-1)).toEqual({
         type: "state_change",
         state: "idle",
+      });
+    });
+  });
+
+  // ── Barge-in during lesson → Q&A → resume ──
+
+  describe("barge-in during lesson → Q&A → resume", () => {
+    const lessonItems = [
+      { type: "heading", text: "Test Lesson", speech: "" },
+      { type: "text", text: "Item 1", speech: "Speech for item one." },
+      { type: "text", text: "Item 2", speech: "Speech for item two." },
+      { type: "text", text: "Item 3", speech: "Speech for item three." },
+    ];
+
+    async function startLesson() {
+      (mockLLM.generateLesson as ReturnType<typeof vi.fn>).mockResolvedValueOnce(lessonItems);
+      ws.receiveJSON({ type: "generate_lesson", topic: "test" });
+      await vi.waitFor(() => expect(mockTTS.openStream).toHaveBeenCalled());
+    }
+
+    it("barge-in during lesson → Q&A → resume sends board_reveal for remaining items", async () => {
+      await startLesson();
+
+      // Verify initial board_update and board_reveal for title (index 0)
+      expect(ws.sentOfType("board_update")).toHaveLength(1);
+      expect(ws.sentOfType("board_reveal")).toContainEqual({ type: "board_reveal", index: 0 });
+
+      // Session should be in speaking state
+      expect(ws.sentOfType("state_change").at(-1)).toEqual({
+        type: "state_change",
+        state: "speaking",
+      });
+
+      // Track the initial openStream call count
+      const initialOpenStreamCount = mockTTS._openStreamCalls.length;
+      expect(initialOpenStreamCount).toBe(1);
+
+      // ── Barge-in during lesson narration ──
+      ws.receiveJSON({ type: "barge_in" });
+
+      expect(mockTTS.stop).toHaveBeenCalled();
+      expect(ws.sentOfType("state_change").at(-1)).toEqual({
+        type: "state_change",
+        state: "listening",
+      });
+
+      // ── User asks a question (final transcript) ──
+      // Override LLM to emit a clause so we transition to speaking
+      (mockLLM.streamSpeechResponse as ReturnType<typeof vi.fn>).mockImplementationOnce(function (
+        this: MockLLM,
+        _transcript: string,
+        _history: unknown,
+        callbacks: LLMStreamCallbacks,
+      ) {
+        this._streamCb = callbacks;
+        queueMicrotask(() => {
+          callbacks.onToken("Evet, doğru. ", "Evet, doğru. ");
+          callbacks.onDone("Evet, doğru.");
+        });
+        return { abort: this._abortFn };
+      });
+
+      mockSTT._startCb!.onTranscript("Bu ne demek?", true);
+      await vi.waitFor(() => expect(mockTTS.openStream).toHaveBeenCalledTimes(initialOpenStreamCount + 1));
+
+      // Should be in speaking state for Q&A answer
+      await vi.waitFor(() => {
+        expect(ws.sentOfType("state_change").at(-1)).toEqual({
+          type: "state_change",
+          state: "speaking",
+        });
+      });
+
+      // ── Q&A TTS ends → lesson should resume ──
+      // Get the Q&A openStream callback (the latest one)
+      const qaStreamCb = mockTTS._openStreamCalls[initialOpenStreamCount];
+      qaStreamCb.onEnd();
+
+      // resumeLesson should have opened another TTS stream
+      await vi.waitFor(() => {
+        expect(mockTTS._openStreamCalls.length).toBe(initialOpenStreamCount + 2);
+      });
+
+      // No tts_end should have been sent between Q&A and resume
+      // (the key fix: tts_end is NOT sent when isLessonNarrating)
+      const ttsEndCount = ws.sentOfType("tts_end").length;
+
+      // board_reveal events should be sent for remaining items
+      const reveals = ws.sentOfType("board_reveal").map((m: { index: number }) => m.index);
+      // Should have reveals for remaining items after barge-in point
+      // lastRevealedIdx was 0 (title), so resume starts from idx 1
+      // At minimum, idx 1 should be revealed immediately by resumeLesson
+      expect(reveals).toContain(1);
+
+      // Session should still be in speaking (not listening)
+      expect(ws.sentOfType("state_change").at(-1)).toEqual({
+        type: "state_change",
+        state: "speaking",
+      });
+
+      // ── Resumed lesson TTS ends → now transition to listening ──
+      const resumeStreamCb = mockTTS._openStreamCalls[initialOpenStreamCount + 1];
+      resumeStreamCb.onEnd();
+
+      // NOW tts_end should be sent
+      expect(ws.sentOfType("tts_end").length).toBe(ttsEndCount + 1);
+      expect(ws.sentOfType("state_change").at(-1)).toEqual({
+        type: "state_change",
+        state: "listening",
+      });
+      expect(mockSTT.start).toHaveBeenCalled();
+    });
+
+    it("resume with no remaining speeches transitions to listening", async () => {
+      // Use a lesson with only title + 1 item
+      const shortLesson = [
+        { type: "heading", text: "Short", speech: "" },
+        { type: "text", text: "Only item", speech: "Only speech." },
+      ];
+      (mockLLM.generateLesson as ReturnType<typeof vi.fn>).mockResolvedValueOnce(shortLesson);
+      ws.receiveJSON({ type: "generate_lesson", topic: "short" });
+      await vi.waitFor(() => expect(mockTTS.openStream).toHaveBeenCalled());
+
+      // Barge-in after all items revealed (simulate lastRevealedIdx = 1)
+      // First, let reveal timer fire for idx 1
+      // The lesson TTS onEnd would set isLessonNarrating = false,
+      // but let's barge in while still narrating
+      ws.receiveJSON({ type: "barge_in" });
+
+      // Q&A
+      (mockLLM.streamSpeechResponse as ReturnType<typeof vi.fn>).mockImplementationOnce(function (
+        this: MockLLM,
+        _transcript: string,
+        _history: unknown,
+        callbacks: LLMStreamCallbacks,
+      ) {
+        this._streamCb = callbacks;
+        queueMicrotask(() => {
+          callbacks.onToken("Tamam. ", "Tamam. ");
+          callbacks.onDone("Tamam.");
+        });
+        return { abort: this._abortFn };
+      });
+
+      mockSTT._startCb!.onTranscript("Anladım", true);
+      await vi.waitFor(() => expect(mockTTS.openStream).toHaveBeenCalledTimes(2));
+
+      await vi.waitFor(() => {
+        expect(ws.sentOfType("state_change").at(-1)).toEqual({
+          type: "state_change",
+          state: "speaking",
+        });
+      });
+
+      // Q&A TTS ends — lastRevealedIdx is 0 (only title was revealed before barge-in)
+      // but idx 1 speech has already been narrated, so remaining from idx 1 should work
+      const qaCb = mockTTS._openStreamCalls[1];
+      qaCb.onEnd();
+
+      // Since lastRevealedIdx was 0 at barge-in, resume from 1
+      // There's only speech at idx 1, so it should open a new stream and narrate
+      await vi.waitFor(() => {
+        expect(mockTTS._openStreamCalls.length).toBeGreaterThanOrEqual(3);
       });
     });
   });

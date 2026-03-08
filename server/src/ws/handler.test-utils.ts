@@ -17,6 +17,7 @@ export type MockTTS = Omit<TTSService, "streamTTS" | "openStream" | "stop"> & {
   _streamCb: TTSCallbacks | null;
   _lastText: string | null;
   _openStreamCb: TTSCallbacks | null;
+  _openStreamCalls: TTSCallbacks[];
   _feedCalls: { text: string; isFinal: boolean }[];
   streamTTS: ReturnType<typeof vi.fn>;
   openStream: ReturnType<typeof vi.fn>;
@@ -53,6 +54,7 @@ export function createMockTTS(): MockTTS {
     _streamCb: null as TTSCallbacks | null,
     _lastText: null as string | null,
     _openStreamCb: null as TTSCallbacks | null,
+    _openStreamCalls: [] as TTSCallbacks[],
     _feedCalls: [] as { text: string; isFinal: boolean }[],
     streamTTS: vi.fn(function (this: MockTTS, text: string, cb: TTSCallbacks) {
       this._lastText = text;
@@ -60,6 +62,7 @@ export function createMockTTS(): MockTTS {
     }),
     openStream: vi.fn(function (this: MockTTS, cb: TTSCallbacks): TTSStreamHandle {
       this._openStreamCb = cb;
+      this._openStreamCalls.push(cb);
       this._feedCalls = [];
       const self = this;
       return {
@@ -82,6 +85,7 @@ export function createMockLLM(): MockLLM {
     streamSpeechResponse: vi.fn(function (
       this: MockLLM,
       _transcript: string,
+      _history: unknown,
       callbacks: LLMStreamCallbacks,
     ): LLMStreamHandle {
       this._streamCb = callbacks;
