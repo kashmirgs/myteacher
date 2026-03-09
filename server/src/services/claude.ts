@@ -1,9 +1,9 @@
-import Anthropic from '@anthropic-ai/sdk';
-import type { BoardItem } from '@myteacher/shared';
-import { parseBoardItems } from '../utils/llm-output.js';
-import { createGeminiLLMService } from './gemini.js';
-import { createMockLLMService } from './mock.js';
-import type { ConversationHistory } from './conversation.js';
+import Anthropic from "@anthropic-ai/sdk";
+import type { BoardItem } from "@myteacher/shared";
+import { parseBoardItems } from "../utils/llm-output.js";
+import { createGeminiLLMService } from "./gemini.js";
+import { createMockLLMService } from "./mock.js";
+import type { ConversationHistory } from "./conversation.js";
 
 /** LLM service — real Anthropic API for speech responses, placeholder for board generation */
 
@@ -22,7 +22,11 @@ export interface LLMStreamHandle {
 export interface LLMService {
   generateLesson(topic: string): Promise<LessonBoardItem[]>;
   generateSpeechResponse(transcript: string): Promise<string>;
-  streamSpeechResponse(transcript: string, history: ConversationHistory, callbacks: LLMStreamCallbacks): LLMStreamHandle;
+  streamSpeechResponse(
+    transcript: string,
+    history: ConversationHistory,
+    callbacks: LLMStreamCallbacks,
+  ): LLMStreamHandle;
   answerAnnotation(
     boardItems: BoardItem[],
     clickedIndex: number,
@@ -37,7 +41,7 @@ function createFallbackLLMService(primary: LLMService, fallback: LLMService): LL
       try {
         return await primary.generateLesson(topic);
       } catch (err) {
-        console.warn('[llm] primary generateLesson failed, using fallback:', err);
+        console.warn("[llm] primary generateLesson failed, using fallback:", err);
         return fallback.generateLesson(topic);
       }
     },
@@ -46,7 +50,7 @@ function createFallbackLLMService(primary: LLMService, fallback: LLMService): LL
       try {
         return await primary.generateSpeechResponse(transcript);
       } catch (err) {
-        console.warn('[llm] primary generateSpeechResponse failed, using fallback:', err);
+        console.warn("[llm] primary generateSpeechResponse failed, using fallback:", err);
         return fallback.generateSpeechResponse(transcript);
       }
     },
@@ -61,7 +65,7 @@ function createFallbackLLMService(primary: LLMService, fallback: LLMService): LL
         onToken: callbacks.onToken,
         onDone: callbacks.onDone,
         onError: (err) => {
-          console.warn('[llm] primary streamSpeechResponse failed, using fallback:', err);
+          console.warn("[llm] primary streamSpeechResponse failed, using fallback:", err);
           fallbackHandle = fallback.streamSpeechResponse(transcript, history, callbacks);
         },
       });
@@ -83,13 +87,12 @@ function createFallbackLLMService(primary: LLMService, fallback: LLMService): LL
       try {
         return await primary.answerAnnotation(boardItems, clickedIndex, question, history);
       } catch (err) {
-        console.warn('[llm] primary answerAnnotation failed, using fallback:', err);
+        console.warn("[llm] primary answerAnnotation failed, using fallback:", err);
         return fallback.answerAnnotation(boardItems, clickedIndex, question, history);
       }
     },
   };
 }
-
 
 export const SPEECH_SYSTEM_PROMPT = `Sen "Öğretmenim" adında, ilkokul çağındaki çocuklara Türkçe ders anlatan sıcak ve sabırlı bir öğretmensin.
 
@@ -103,7 +106,8 @@ Kurallar:
 - Önceki konuşmalardaki bilgileri hatırla ve tutarlı ol. Aynı şeyleri tekrarlama.
 - Tahtada bir ders varsa, öğrencinin soruları o dersle ilgili olabilir.`;
 
-export const LESSON_SYSTEM_PROMPT = 'Sen ilkokul öğretmenisin. Sadece istenen JSON formatında yanıt ver.\nHer eleman için "speech" alanına o elemanın sesli anlatımını yaz (1-2 cümle, konuşma dili).';
+export const LESSON_SYSTEM_PROMPT =
+  'Sen ilkokul öğretmenisin. Sadece istenen JSON formatında yanıt ver.\nHer eleman için "speech" alanına o elemanın sesli anlatımını yaz (1-2 cümle, konuşma dili).';
 
 export function buildLessonPrompt(topic: string): string {
   return `Konu: ${topic}
@@ -136,11 +140,13 @@ Kurallar:
 - Çocuklara uygun, basit dil kullan.`;
 
 export function buildAnnotationContext(boardItems: BoardItem[], clickedIndex: number): string {
-  return boardItems.map((item, i) => {
-    const marker = i === clickedIndex ? ' ← İŞARETLENDİ' : '';
-    if (item.type === 'list') return `[${i}] (${item.type}) ${item.items.join(', ')}${marker}`;
-    return `[${i}] (${item.type}) ${item.text}${marker}`;
-  }).join('\n');
+  return boardItems
+    .map((item, i) => {
+      const marker = i === clickedIndex ? " ← İŞARETLENDİ" : "";
+      if (item.type === "list") return `[${i}] (${item.type}) ${item.items.join(", ")}${marker}`;
+      return `[${i}] (${item.type}) ${item.text}${marker}`;
+    })
+    .join("\n");
 }
 
 function createClaudeLLMService(): LLMService {
@@ -155,13 +161,13 @@ function createClaudeLLMService(): LLMService {
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
           const response = await client.messages.create({
-            model: 'claude-sonnet-4-20250514',
+            model: "claude-sonnet-4-20250514",
             max_tokens: 2048,
             system: LESSON_SYSTEM_PROMPT,
-            messages: [{ role: 'user', content: prompt }],
+            messages: [{ role: "user", content: prompt }],
           });
           const block = response.content[0];
-          if (block.type !== 'text') throw new Error('Unexpected response type');
+          if (block.type !== "text") throw new Error("Unexpected response type");
           return parseBoardItems(block.text) as LessonBoardItem[];
         } catch (err) {
           console.warn(`[llm:claude] generateLesson attempt ${attempt + 1} failed:`, err);
@@ -169,50 +175,52 @@ function createClaudeLLMService(): LLMService {
         }
       }
 
-      throw new Error('unreachable');
+      throw new Error("unreachable");
     },
 
     async generateSpeechResponse(transcript: string): Promise<string> {
       console.log(`[llm:claude] generating speech response for: "${transcript.slice(0, 60)}..."`);
 
       const response = await client.messages.create({
-        model: 'claude-sonnet-4-20250514',
+        model: "claude-sonnet-4-20250514",
         max_tokens: 512,
         system: SPEECH_SYSTEM_PROMPT,
-        messages: [
-          { role: 'user', content: transcript },
-        ],
+        messages: [{ role: "user", content: transcript }],
       });
 
       const block = response.content[0];
-      if (block.type !== 'text') {
-        throw new Error('Unexpected response type from Claude');
+      if (block.type !== "text") {
+        throw new Error("Unexpected response type from Claude");
       }
       return block.text;
     },
 
-    streamSpeechResponse(transcript: string, history: ConversationHistory, callbacks: LLMStreamCallbacks): LLMStreamHandle {
+    streamSpeechResponse(
+      transcript: string,
+      history: ConversationHistory,
+      callbacks: LLMStreamCallbacks,
+    ): LLMStreamHandle {
       console.log(`[llm:claude] streaming speech response for: "${transcript.slice(0, 60)}..."`);
 
       const stream = client.messages.stream({
-        model: 'claude-haiku-4-5-20251001',
+        model: "claude-haiku-4-5-20251001",
         max_tokens: 512,
         system: SPEECH_SYSTEM_PROMPT,
         messages: history.getMessagesForClaude(),
       });
 
-      let snapshot = '';
+      let snapshot = "";
 
-      stream.on('text', (delta) => {
+      stream.on("text", (delta) => {
         snapshot += delta;
         callbacks.onToken(delta, snapshot);
       });
 
-      stream.on('end', () => {
+      stream.on("end", () => {
         callbacks.onDone(snapshot);
       });
 
-      stream.on('error', (err) => {
+      stream.on("error", (err) => {
         callbacks.onError(err instanceof Error ? err : new Error(String(err)));
       });
 
@@ -228,47 +236,47 @@ function createClaudeLLMService(): LLMService {
       console.log(`[llm:claude] annotation click index=${clickedIndex}, question="${question}"`);
 
       const boardContext = buildAnnotationContext(boardItems, clickedIndex);
-      const q = question || 'Bu ne demek?';
+      const q = question || "Bu ne demek?";
 
       const messages = [
         ...history.getMessagesForClaude(),
-        { role: 'user' as const, content: `Tahta içeriği:\n${boardContext}\n\nSoru: ${q}` },
+        { role: "user" as const, content: `Tahta içeriği:\n${boardContext}\n\nSoru: ${q}` },
       ];
 
       const response = await client.messages.create({
-        model: 'claude-haiku-4-5-20251001',
+        model: "claude-haiku-4-5-20251001",
         max_tokens: 512,
         system: ANNOTATION_SYSTEM_PROMPT,
         messages,
       });
       const block = response.content[0];
-      if (block.type !== 'text') throw new Error('Unexpected response type');
+      if (block.type !== "text") throw new Error("Unexpected response type");
       return block.text;
     },
   };
 }
 
 export function createLLMService(): LLMService {
-  const provider = process.env.LLM_PROVIDER ?? 'google';
+  const provider = process.env.LLM_PROVIDER ?? "google";
   const fallbackProvider = process.env.LLM_FALLBACK;
 
-  if (provider === 'mock') {
-    console.log('[llm] Using Mock provider');
+  if (provider === "mock") {
+    console.log("[llm] Using Mock provider");
     return createMockLLMService();
   }
 
   let primary: LLMService;
 
-  if (provider === 'anthropic') {
-    console.log('[llm] Using Anthropic Claude provider');
+  if (provider === "anthropic") {
+    console.log("[llm] Using Anthropic Claude provider");
     primary = createClaudeLLMService();
   } else {
-    console.log('[llm] Using Google Gemini provider');
+    console.log("[llm] Using Google Gemini provider");
     primary = createGeminiLLMService();
   }
 
-  if (fallbackProvider === 'mock') {
-    console.log('[llm] Using Mock fallback provider');
+  if (fallbackProvider === "mock") {
+    console.log("[llm] Using Mock fallback provider");
     return createFallbackLLMService(primary, createMockLLMService());
   }
 

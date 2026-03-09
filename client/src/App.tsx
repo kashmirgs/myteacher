@@ -27,9 +27,10 @@ export function App() {
 
   // Request mic permission early so the browser prompt appears on page load
   useEffect(() => {
-    navigator.mediaDevices.getUserMedia({ audio: true })
-      .then(stream => {
-        stream.getTracks().forEach(t => t.stop());
+    navigator.mediaDevices
+      .getUserMedia({ audio: true })
+      .then((stream) => {
+        stream.getTracks().forEach((t) => t.stop());
       })
       .catch(() => {});
   }, []);
@@ -38,21 +39,21 @@ export function App() {
   // Unlock once on first interaction (click/tap/keydown).
   useEffect(() => {
     const unlock = () => {
-      console.debug('[audio] user gesture detected, unlocking audio');
+      console.debug("[audio] user gesture detected, unlocking audio");
       void audioPlayer.warmUp();
-      window.removeEventListener('pointerdown', unlock);
-      window.removeEventListener('touchend', unlock);
-      window.removeEventListener('keydown', unlock);
+      window.removeEventListener("pointerdown", unlock);
+      window.removeEventListener("touchend", unlock);
+      window.removeEventListener("keydown", unlock);
     };
 
-    window.addEventListener('pointerdown', unlock, { once: true });
-    window.addEventListener('touchend', unlock, { once: true });
-    window.addEventListener('keydown', unlock, { once: true });
+    window.addEventListener("pointerdown", unlock, { once: true });
+    window.addEventListener("touchend", unlock, { once: true });
+    window.addEventListener("keydown", unlock, { once: true });
 
     return () => {
-      window.removeEventListener('pointerdown', unlock);
-      window.removeEventListener('touchend', unlock);
-      window.removeEventListener('keydown', unlock);
+      window.removeEventListener("pointerdown", unlock);
+      window.removeEventListener("touchend", unlock);
+      window.removeEventListener("keydown", unlock);
     };
   }, [audioPlayer]);
 
@@ -60,12 +61,12 @@ export function App() {
   // Re-warm on visibility to re-unlock output before TTS resumes.
   useEffect(() => {
     const handleVisibility = () => {
-      if (document.visibilityState === 'visible') {
+      if (document.visibilityState === "visible") {
         void audioPlayer.warmUp();
       }
     };
-    document.addEventListener('visibilitychange', handleVisibility);
-    return () => document.removeEventListener('visibilitychange', handleVisibility);
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => document.removeEventListener("visibilitychange", handleVisibility);
   }, [audioPlayer]);
 
   // Message handler is called synchronously from ws.onmessage via a ref,
@@ -196,10 +197,13 @@ export function App() {
     }
   }, [isOpen, start, close, vadDetach, audioPlayer]);
 
-  const handleGenerateLesson = useCallback((topic: string) => {
-    void audioPlayer.warmUp();
-    send({ type: "generate_lesson", topic });
-  }, [send, audioPlayer]);
+  const handleGenerateLesson = useCallback(
+    (topic: string) => {
+      void audioPlayer.warmUp();
+      send({ type: "generate_lesson", topic });
+    },
+    [send, audioPlayer],
+  );
 
   const handleAnnotationClick = useCallback(
     (index: number) => {

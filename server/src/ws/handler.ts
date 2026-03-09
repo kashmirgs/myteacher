@@ -238,7 +238,7 @@ export function handleConnection(ws: WebSocket): void {
   /** Resume lesson narration from a given speech index after a barge-in Q&A. */
   function resumeLesson(fromIdx: number) {
     const remaining = lessonSpeeches.slice(fromIdx);
-    if (remaining.every(s => !s)) {
+    if (remaining.every((s) => !s)) {
       isLessonNarrating = false;
       session.transition("listening");
       suppressTranscriptsUntil = performance.now() + ttsEndSuppressMs;
@@ -248,7 +248,9 @@ export function handleConnection(ws: WebSocket): void {
     }
 
     const remainingNonEmpty = remaining.filter(Boolean);
-    console.log(`[handler] resuming lesson from index ${fromIdx}/${lessonSpeeches.length}, ${remainingNonEmpty.length} non-empty speeches remaining`);
+    console.log(
+      `[handler] resuming lesson from index ${fromIdx}/${lessonSpeeches.length}, ${remainingNonEmpty.length} non-empty speeches remaining`,
+    );
     const gen = ++llmGeneration;
 
     // No tts_start — client audio player is still in playing mode from the Q&A response.
@@ -294,19 +296,21 @@ export function handleConnection(ws: WebSocket): void {
 
       if (cumulativeDelay > 0) {
         const delay = cumulativeDelay;
-        revealTimers.push(setTimeout(() => {
-          if (gen !== llmGeneration) return;
-          lastRevealedIdx = i;
-          console.log(`[handler] board_reveal index=${i} (resumed, delayed)`);
-          send({ type: "board_reveal", index: i });
-        }, delay));
+        revealTimers.push(
+          setTimeout(() => {
+            if (gen !== llmGeneration) return;
+            lastRevealedIdx = i;
+            console.log(`[handler] board_reveal index=${i} (resumed, delayed)`);
+            send({ type: "board_reveal", index: i });
+          }, delay),
+        );
       } else {
         lastRevealedIdx = i;
         console.log(`[handler] board_reveal index=${i} (resumed, immediate)`);
         send({ type: "board_reveal", index: i });
       }
 
-      const isLast = lessonSpeeches.slice(i + 1).every(s => !s) || i === lessonSpeeches.length - 1;
+      const isLast = lessonSpeeches.slice(i + 1).every((s) => !s) || i === lessonSpeeches.length - 1;
       ttsHandle.feed(speech + " ", isLast);
       cumulativeDelay += speech.length * MS_PER_CHAR;
     }
@@ -367,7 +371,7 @@ export function handleConnection(ws: WebSocket): void {
         currentLLMHandle?.abort();
         currentLLMHandle = null;
         tts.stop();
-        revealTimers.forEach(t => clearTimeout(t));
+        revealTimers.forEach((t) => clearTimeout(t));
         revealTimers = [];
         pendingAudio.length = 0;
         if (sttRestartTimer) {
@@ -393,7 +397,14 @@ export function handleConnection(ws: WebSocket): void {
       // transitioning to listening. Do NOT reset isLessonNarrating here.
       case "barge_in": {
         const state = session.getState();
-        console.log("[handler] barge_in received, state=", state, "isLessonNarrating=", isLessonNarrating, "lastRevealedIdx=", lastRevealedIdx);
+        console.log(
+          "[handler] barge_in received, state=",
+          state,
+          "isLessonNarrating=",
+          isLessonNarrating,
+          "lastRevealedIdx=",
+          lastRevealedIdx,
+        );
         lastBargeInAt = performance.now();
         if (state === "listening") {
           console.log("[handler] barge_in ignored (already listening)");
@@ -404,7 +415,7 @@ export function handleConnection(ws: WebSocket): void {
         currentLLMHandle?.abort();
         currentLLMHandle = null;
         tts.stop();
-        revealTimers.forEach(t => clearTimeout(t));
+        revealTimers.forEach((t) => clearTimeout(t));
         revealTimers = [];
         if (state === "speaking") {
           stopSTT();
@@ -442,10 +453,10 @@ export function handleConnection(ws: WebSocket): void {
         const speeches = lessonItems.map((it) => {
           const speech = (it as { speech?: string }).speech;
           if (speech) return speech;
-          if ('text' in it && typeof it.text === 'string') return it.text;
-          return '';
+          if ("text" in it && typeof it.text === "string") return it.text;
+          return "";
         });
-        boardItems = lessonItems.map(it => {
+        boardItems = lessonItems.map((it) => {
           const { speech, ...rest } = it as any;
           return rest as BoardItem;
         });
@@ -467,7 +478,7 @@ export function handleConnection(ws: WebSocket): void {
           onChunk: (audio) => {
             if (gen !== llmGeneration) return;
             if (firstLessonChunk) {
-              console.log('[handler] first tts_chunk sent to client');
+              console.log("[handler] first tts_chunk sent to client");
               firstLessonChunk = false;
             }
             send({ type: "tts_chunk", audio });
@@ -494,7 +505,9 @@ export function handleConnection(ws: WebSocket): void {
         const MS_PER_CHAR = 65;
         let cumulativeDelay = 0;
         const feedableSpeeches = speeches.filter(Boolean);
-        console.log(`[handler] lesson speeches: ${feedableSpeeches.length}/${speeches.length} non-empty, total chars=${feedableSpeeches.join(' ').length}`);
+        console.log(
+          `[handler] lesson speeches: ${feedableSpeeches.length}/${speeches.length} non-empty, total chars=${feedableSpeeches.join(" ").length}`,
+        );
 
         for (let i = 0; i < lessonItems.length; i++) {
           const speech = speeches[i];
@@ -502,14 +515,16 @@ export function handleConnection(ws: WebSocket): void {
 
           if (i > 0) {
             const delay = cumulativeDelay;
-            revealTimers.push(setTimeout(() => {
-              if (gen !== llmGeneration) return;
-              lastRevealedIdx = i;
-              send({ type: "board_reveal", index: i });
-            }, delay));
+            revealTimers.push(
+              setTimeout(() => {
+                if (gen !== llmGeneration) return;
+                lastRevealedIdx = i;
+                send({ type: "board_reveal", index: i });
+              }, delay),
+            );
           }
 
-          const isLast = speeches.slice(i + 1).every(s => !s) || i === lessonItems.length - 1;
+          const isLast = speeches.slice(i + 1).every((s) => !s) || i === lessonItems.length - 1;
           ttsHandle.feed(speech + " ", isLast);
           cumulativeDelay += speech.length * MS_PER_CHAR;
         }
@@ -550,7 +565,7 @@ export function handleConnection(ws: WebSocket): void {
     currentLLMHandle?.abort();
     currentLLMHandle = null;
     if (sttRestartTimer) clearTimeout(sttRestartTimer);
-    revealTimers.forEach(t => clearTimeout(t));
+    revealTimers.forEach((t) => clearTimeout(t));
     revealTimers = [];
     stopSTT();
     sttGeneration++;

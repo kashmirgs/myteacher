@@ -1,4 +1,4 @@
-import { useRef, useCallback } from 'react';
+import { useRef, useCallback } from "react";
 
 const AudioContextCtor: typeof AudioContext =
   window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext!;
@@ -13,6 +13,8 @@ export function useAudioPlayer() {
   // HTMLAudioElement to force an output device unlock.
   const mediaDestRef = useRef<MediaStreamAudioDestinationNode | null>(null);
   const mediaElRef = useRef<HTMLAudioElement | null>(null);
+  // True => single output route is media element (prevents double output/echo).
+  const mediaRouteActiveRef = useRef(false);
   const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   const queueRef = useRef<AudioBuffer[]>([]);
   const isPlayingRef = useRef(false);
@@ -22,7 +24,7 @@ export function useAudioPlayer() {
   const acceptingRef = useRef(false);
 
   function getContext(): AudioContext {
-    if (!ctxRef.current || ctxRef.current.state === 'closed') {
+    if (!ctxRef.current || ctxRef.current.state === "closed") {
       // Use the browser's native sample rate (typically 44.1/48 kHz).
       // Audio buffers are created at 24 kHz; the Web Audio API resamples
       // automatically.  Forcing sampleRate:24000 causes silent output on
@@ -31,25 +33,45 @@ export function useAudioPlayer() {
       ctxRef.current = new AudioContextCtor();
       // Create persistent GainNode: source → gain → destination
       const gain = ctxRef.current.createGain();
-      gain.connect(ctxRef.current.destination);
       gainRef.current = gain;
-      if (mediaDestRef.current) {
-        gain.connect(mediaDestRef.current);
-      }
+      mediaRouteActiveRef.current = false;
+      connectOutputRoute();
     }
     return ctxRef.current;
   }
 
+  function connectOutputRoute() {
+    const ctx = ctxRef.current;
+    const gain = gainRef.current;
+    if (!ctx || !gain) return;
+
+    // Important: disconnect first, then connect exactly one route.
+    // Keeping both destination + media connected causes audible echo.
+    try {
+      gain.disconnect();
+    } catch {
+      // no-op
+    }
+
+    if (mediaRouteActiveRef.current && mediaDestRef.current) {
+      gain.connect(mediaDestRef.current);
+      console.debug('[audio] route=media');
+    } else {
+      gain.connect(ctx.destination);
+      console.debug('[audio] route=destination');
+    }
+  }
+
   async function ensureRunning(ctx: AudioContext, reason: string) {
-    if (ctx.state === 'suspended') {
+    if (ctx.state === "suspended") {
       try {
         await ctx.resume();
       } catch (err) {
-        console.warn('[audio] resume failed:', reason, err);
+        console.warn("[audio] resume failed:", reason, err);
       }
     }
-    if (ctx.state !== 'running') {
-      console.debug('[audio] context not running after resume:', reason, ctx.state);
+    if (ctx.state !== "running") {
+      console.debug("[audio] context not running after resume:", reason, ctx.state);
     }
   }
 
@@ -105,7 +127,7 @@ export function useAudioPlayer() {
   async function scheduleBuffer(audioBuffer: AudioBuffer) {
     const ctx = getContext();
     const gain = getGain();
-    await ensureRunning(ctx, 'schedule');
+    await ensureRunning(ctx, "schedule");
 
     const source = ctx.createBufferSource();
     source.buffer = audioBuffer;
@@ -127,7 +149,7 @@ export function useAudioPlayer() {
     if (!acceptingRef.current) return;
     try {
       if (queueRef.current.length === 0) {
-        console.debug('[audio] first chunk received');
+        console.debug("[audio] first chunk received");
       }
       const audioBuffer = decodeChunk(base64Audio);
       if (queueRef.current.length === 0) {
@@ -138,11 +160,11 @@ export function useAudioPlayer() {
           if (value > peak) peak = value;
         }
         console.debug(
-          '[audio] decoded chunk duration=',
+          "[audio] decoded chunk duration=",
           audioBuffer.duration.toFixed(3),
-          'rate=',
+          "rate=",
           audioBuffer.sampleRate,
-          'peak=',
+          "peak=",
           peak.toFixed(4),
         );
       }
@@ -150,7 +172,7 @@ export function useAudioPlayer() {
       await scheduleBuffer(audioBuffer);
       isPlayingRef.current = true;
     } catch (err) {
-      console.error('[audio] failed to decode chunk:', err);
+      console.error("[audio] failed to decode chunk:", err);
     }
   }, []);
 
@@ -163,8 +185,8 @@ export function useAudioPlayer() {
     acceptingRef.current = true;
     const ctx = getContext();
     const gain = getGain();
-    await ensureRunning(ctx, 'start');
-    console.debug('[audio] start, ctx.state=', ctx.state, 'sampleRate=', ctx.sampleRate);
+    await ensureRunning(ctx, "start");
+    console.debug("[audio] start, ctx.state=", ctx.state, "sampleRate=", ctx.sampleRate);
     // Ensure gain is 1 — a previous stop() may have faded it to 0
     gain.gain.cancelScheduledValues(ctx.currentTime);
     gain.gain.setValueAtTime(1, ctx.currentTime);
@@ -191,7 +213,7 @@ export function useAudioPlayer() {
     const ctx = ctxRef.current;
     const gain = gainRef.current;
 
-    if (ctx && ctx.state !== 'closed' && gain) {
+    if (ctx && ctx.state !== "closed" && gain) {
       const now = ctx.currentTime;
       // 50ms linear fade-out
       gain.gain.setValueAtTime(gain.gain.value, now);
@@ -208,7 +230,7 @@ export function useAudioPlayer() {
         }
         sourcesRef.current.clear();
         // Reset gain for next playback cycle
-        if (gainRef.current && ctxRef.current && ctxRef.current.state !== 'closed') {
+        if (gainRef.current && ctxRef.current && ctxRef.current.state !== "closed") {
           gainRef.current.gain.setValueAtTime(1, ctxRef.current.currentTime);
         }
         nextStartTimeRef.current = 0;
@@ -241,7 +263,7 @@ export function useAudioPlayer() {
     // TTS threshold from the very first chunk.
     if (isPlayingRef.current) return true;
     const ctx = ctxRef.current;
-    if (!ctx || ctx.state === 'closed') return false;
+    if (!ctx || ctx.state === "closed") return false;
     return nextStartTimeRef.current > ctx.currentTime + 0.1;
   }, []);
 
@@ -251,17 +273,16 @@ export function useAudioPlayer() {
   const warmUp = useCallback(async () => {
     // Safari intermittent sessizlik için context'i kapatıp yeniden oluşturma.
     // Mevcut context'i koru; sadece running + prime uygula.
-    const ctx = getContext();  // creates context + gain if missing
-    await ensureRunning(ctx, 'warmUp');
+    const ctx = getContext(); // creates context + gain if missing
+    await ensureRunning(ctx, "warmUp");
 
     // MediaElement fallback: ensure audio output unlocked for Safari.
     try {
       if (!mediaDestRef.current) {
         mediaDestRef.current = ctx.createMediaStreamDestination();
-        getGain().connect(mediaDestRef.current);
       }
       if (!mediaElRef.current) {
-        const el = document.createElement('audio');
+        const el = document.createElement("audio");
         // Keep element off-DOM; we only need its playback pipeline.
         el.autoplay = true;
         el.muted = false;
@@ -272,9 +293,15 @@ export function useAudioPlayer() {
         mediaElRef.current.srcObject = mediaDestRef.current.stream;
       }
       await mediaElRef.current.play();
-      console.debug('[audio] media element play() ok');
+      console.debug("[audio] media element play() ok");
+
+      // Use exactly one output route to avoid echo.
+      mediaRouteActiveRef.current = true;
+      connectOutputRoute();
     } catch (err) {
-      console.warn('[audio] media element play() failed:', err);
+      console.warn("[audio] media element play() failed:", err);
+      mediaRouteActiveRef.current = false;
+      connectOutputRoute();
     }
 
     // Safari sometimes needs a tiny playback to fully unlock audio output.
@@ -287,7 +314,7 @@ export function useAudioPlayer() {
       source.start();
       source.stop(ctx.currentTime + 0.01);
     } catch (err) {
-      console.warn('[audio] warmUp prime failed:', err);
+      console.warn("[audio] warmUp prime failed:", err);
     }
 
     // Optional debug tone: enable via console
@@ -303,13 +330,13 @@ export function useAudioPlayer() {
         testGain.connect(gain);
         osc.start();
         osc.stop(ctx.currentTime + 0.12);
-        console.debug('[audio] test tone played');
+        console.debug("[audio] test tone played");
       } catch (err) {
-        console.warn('[audio] test tone failed:', err);
+        console.warn("[audio] test tone failed:", err);
       }
     }
 
-    console.debug('[audio] warmUp: ctx.state=', ctx.state, 'sampleRate=', ctx.sampleRate);
+    console.debug("[audio] warmUp: ctx.state=", ctx.state, "sampleRate=", ctx.sampleRate);
   }, []);
 
   return { feedChunk, start, stop, flush, isTTSPlaying, warmUp };

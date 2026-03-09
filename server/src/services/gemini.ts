@@ -13,7 +13,7 @@ import type { ConversationHistory } from "./conversation.js";
 
 export function createGeminiLLMService(): LLMService {
   if (!process.env.GOOGLE_API_KEY) {
-    throw new Error('GOOGLE_API_KEY is missing. Set it or use LLM_PROVIDER=mock.');
+    throw new Error("GOOGLE_API_KEY is missing. Set it or use LLM_PROVIDER=mock.");
   }
   const ai = new GoogleGenAI({ apiKey: process.env.GOOGLE_API_KEY });
 
@@ -55,7 +55,11 @@ export function createGeminiLLMService(): LLMService {
       return response.text ?? "";
     },
 
-    streamSpeechResponse(transcript: string, history: ConversationHistory, callbacks: LLMStreamCallbacks): LLMStreamHandle {
+    streamSpeechResponse(
+      transcript: string,
+      history: ConversationHistory,
+      callbacks: LLMStreamCallbacks,
+    ): LLMStreamHandle {
       console.log(`[llm:gemini] streaming speech response for: "${transcript.slice(0, 60)}..."`);
 
       const controller = new AbortController();
@@ -90,7 +94,12 @@ export function createGeminiLLMService(): LLMService {
       return { abort: () => controller.abort() };
     },
 
-    async answerAnnotation(boardItems: BoardItem[], clickedIndex: number, question: string, history: ConversationHistory): Promise<string> {
+    async answerAnnotation(
+      boardItems: BoardItem[],
+      clickedIndex: number,
+      question: string,
+      history: ConversationHistory,
+    ): Promise<string> {
       console.log(`[llm:gemini] annotation click index=${clickedIndex}, question="${question}"`);
 
       const boardContext = buildAnnotationContext(boardItems, clickedIndex);

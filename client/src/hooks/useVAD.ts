@@ -1,4 +1,4 @@
-import { useRef, useCallback } from 'react';
+import { useRef, useCallback } from "react";
 
 const AudioContextCtor: typeof AudioContext =
   window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext!;
@@ -54,15 +54,7 @@ export function useVAD(options: UseVADOptions) {
 
     // Log every ~1 second (20 × 50ms)
     if (++logCounterRef.current % 20 === 0) {
-      console.log(
-        '[VAD] RMS:',
-        rms.toFixed(5),
-        'threshold:',
-        threshold,
-        ttsPlaying ? '(TTS)' : '',
-        'above:',
-        isAbove,
-      );
+      console.log("[VAD] RMS:", rms.toFixed(5), "threshold:", threshold, ttsPlaying ? "(TTS)" : "", "above:", isAbove);
     }
 
     // Sliding window: record this frame
@@ -103,11 +95,11 @@ export function useVAD(options: UseVADOptions) {
     if (analyserRef.current) return;
 
     // Create separate AudioContext at native sample rate (not 24kHz TTS context)
-    if (!audioCtxRef.current || audioCtxRef.current.state === 'closed') {
+    if (!audioCtxRef.current || audioCtxRef.current.state === "closed") {
       audioCtxRef.current = new AudioContextCtor();
     }
     const ctx = audioCtxRef.current;
-    if (ctx.state === 'suspended') {
+    if (ctx.state === "suspended") {
       ctx.resume();
     }
 
@@ -119,14 +111,14 @@ export function useVAD(options: UseVADOptions) {
     sourceRef.current = source;
     analyserRef.current = analyser;
 
-    console.log('[VAD] attached, sampleRate:', ctx.sampleRate);
+    console.log("[VAD] attached, sampleRate:", ctx.sampleRate);
   }, []);
 
   /** Start polling for voice activity */
   const startPolling = useCallback(() => {
     if (pollTimerRef.current) return;
     pollTimerRef.current = setInterval(pollVAD, POLL_INTERVAL_MS);
-    console.log('[VAD] polling started');
+    console.log("[VAD] polling started");
   }, []);
 
   /** Stop polling */
@@ -143,7 +135,7 @@ export function useVAD(options: UseVADOptions) {
     windowRef.current.fill(false);
     windowIdxRef.current = 0;
     logCounterRef.current = 0;
-    console.log('[VAD] polling stopped');
+    console.log("[VAD] polling stopped");
   }, []);
 
   /** Full teardown: disconnect audio nodes and close context */
@@ -156,11 +148,11 @@ export function useVAD(options: UseVADOptions) {
     }
     analyserRef.current = null;
 
-    if (audioCtxRef.current && audioCtxRef.current.state !== 'closed') {
+    if (audioCtxRef.current && audioCtxRef.current.state !== "closed") {
       audioCtxRef.current.close().catch(() => {});
       audioCtxRef.current = null;
     }
-    console.log('[VAD] detached');
+    console.log("[VAD] detached");
   }, [stopPolling]);
 
   /** Reset speech detection state without stopping polling.
