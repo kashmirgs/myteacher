@@ -20,6 +20,8 @@ export function App() {
   const vadResetRef = useRef<() => void>(() => {});
   const lastBargeInAtRef = useRef(0);
   const bargeInCloseGuardMs = 1000;
+  const speakingEnteredAtRef = useRef(0);
+  const bargeInGraceMs = 500;
 
   const audioPlayer = useAudioPlayer();
 
@@ -28,9 +30,42 @@ export function App() {
     navigator.mediaDevices.getUserMedia({ audio: true })
       .then(stream => {
         stream.getTracks().forEach(t => t.stop());
-        audioPlayer.warmUp();
       })
       .catch(() => {});
+  }, []);
+
+  // Safari requires AudioContext to be created/resumed inside a user gesture.
+  // Unlock once on first interaction (click/tap/keydown).
+  useEffect(() => {
+    const unlock = () => {
+      console.debug('[audio] user gesture detected, unlocking audio');
+      void audioPlayer.warmUp();
+      window.removeEventListener('pointerdown', unlock);
+      window.removeEventListener('touchend', unlock);
+      window.removeEventListener('keydown', unlock);
+    };
+
+    window.addEventListener('pointerdown', unlock, { once: true });
+    window.addEventListener('touchend', unlock, { once: true });
+    window.addEventListener('keydown', unlock, { once: true });
+
+    return () => {
+      window.removeEventListener('pointerdown', unlock);
+      window.removeEventListener('touchend', unlock);
+      window.removeEventListener('keydown', unlock);
+    };
+  }, [audioPlayer]);
+
+  // Safari can suspend audio when the tab loses focus.
+  // Re-warm on visibility to re-unlock output before TTS resumes.
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        void audioPlayer.warmUp();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => document.removeEventListener('visibilitychange', handleVisibility);
   }, [audioPlayer]);
 
   // Message handler is called synchronously from ws.onmessage via a ref,
@@ -47,9 +82,17 @@ export function App() {
       case "state_change":
         setSessionState(msg.state);
         sessionStateRef.current = msg.state;
+        // ⚠️ AUDIO PIPELINE — start() must be skipped when already playing.
+        // During lesson resume after Q&A, server sends a second state_change:speaking
+        // while Q&A audio tail is still draining. Calling start() here would invoke
+        // gain.cancelScheduledValues() which kills Safari audio output.
+        // VAD reset and grace period must still run in all cases.
         if (msg.state === "speaking") {
-          audioPlayer.start();
+          if (!audioPlayer.isTTSPlaying()) {
+            void audioPlayer.start();
+          }
           vadResetRef.current();
+          speakingEnteredAtRef.current = performance.now();
         }
         break;
       case "transcript":
@@ -59,11 +102,14 @@ export function App() {
           setTranscript(msg.text);
         }
         break;
+      // ⚠️ AUDIO PIPELINE — tts_start is only sent for normal Q&A responses.
+      // Lesson resume (resumeLesson) deliberately skips tts_start to avoid
+      // flush()/start() which disrupts the audio pipeline mid-playback.
       case "tts_start":
-        audioPlayer.start();
+        void audioPlayer.start();
         break;
       case "tts_chunk":
-        audioPlayer.feedChunk(msg.audio);
+        void audioPlayer.feedChunk(msg.audio);
         break;
       case "tts_end":
         audioPlayer.flush();
@@ -77,8 +123,22 @@ export function App() {
 
   const { isOpen, isRecording, start, stop, close, setOnStreamReady, suppressAudio } = useMicrophone(send, sendBinary);
 
+  // Reset session state when connection drops (e.g. server restart)
+  useEffect(() => {
+    if (!isConnected) {
+      setSessionState("idle");
+      sessionStateRef.current = "idle";
+    }
+  }, [isConnected]);
+
   const handleSpeechStart = useCallback(() => {
+    // ⚠️ AUDIO PIPELINE — Grace period (500ms) prevents echo-triggered
+    // false barge-ins at TTS start. The speaker's own audio feeds back
+    // through the mic before echo suppression kicks in.
     if (audioPlayer.isTTSPlaying()) {
+      if (performance.now() - speakingEnteredAtRef.current < bargeInGraceMs) {
+        return; // Suppress echo-triggered false barge-in
+      }
       console.log("[barge-in] speech detected during TTS playback, stopping audio");
       lastBargeInAtRef.current = performance.now();
       audioPlayer.stop();
@@ -129,14 +189,17 @@ export function App() {
     } else {
       // Warm up AudioContext during this user gesture so the browser's
       // autoplay policy allows playback later when TTS chunks arrive.
-      audioPlayer.warmUp();
+      if (!audioPlayer.isTTSPlaying()) {
+        void audioPlayer.warmUp();
+      }
       start();
     }
   }, [isOpen, start, close, vadDetach, audioPlayer]);
 
   const handleGenerateLesson = useCallback((topic: string) => {
+    void audioPlayer.warmUp();
     send({ type: "generate_lesson", topic });
-  }, [send]);
+  }, [send, audioPlayer]);
 
   const handleAnnotationClick = useCallback(
     (index: number) => {

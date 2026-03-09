@@ -624,6 +624,65 @@ describe("handleConnection", () => {
       expect(mockSTT.start).toHaveBeenCalled();
     });
 
+    it("resume sends state_change:speaking on first TTS chunk (grace period reset)", async () => {
+      await startLesson();
+      const initialOpenStreamCount = mockTTS._openStreamCalls.length;
+
+      // Barge-in during lesson
+      ws.receiveJSON({ type: "barge_in" });
+
+      // Q&A
+      (mockLLM.streamSpeechResponse as ReturnType<typeof vi.fn>).mockImplementationOnce(function (
+        this: MockLLM,
+        _transcript: string,
+        _history: unknown,
+        callbacks: LLMStreamCallbacks,
+      ) {
+        this._streamCb = callbacks;
+        queueMicrotask(() => {
+          callbacks.onToken("Evet, doğru. ", "Evet, doğru. ");
+          callbacks.onDone("Evet, doğru.");
+        });
+        return { abort: this._abortFn };
+      });
+
+      mockSTT._startCb!.onTranscript("Bu ne?", true);
+      await vi.waitFor(() => expect(mockTTS.openStream).toHaveBeenCalledTimes(initialOpenStreamCount + 1));
+      await vi.waitFor(() => {
+        expect(ws.sentOfType("state_change").at(-1)).toEqual({
+          type: "state_change",
+          state: "speaking",
+        });
+      });
+
+      // Q&A TTS ends → resume starts
+      const qaStreamCb = mockTTS._openStreamCalls[initialOpenStreamCount];
+      qaStreamCb.onEnd();
+
+      await vi.waitFor(() => {
+        expect(mockTTS._openStreamCalls.length).toBe(initialOpenStreamCount + 2);
+      });
+
+      // Count state_change:speaking messages before simulating TTS chunk
+      const speakingCountBefore = ws.sentOfType("state_change")
+        .filter((m: { state: string }) => m.state === "speaking").length;
+
+      // Simulate first resume TTS chunk arriving from Cartesia
+      const resumeStreamCb = mockTTS._openStreamCalls[initialOpenStreamCount + 1];
+      resumeStreamCb.onChunk("base64audiodata");
+
+      // Should have sent an extra state_change:speaking for grace period reset
+      const speakingCountAfter = ws.sentOfType("state_change")
+        .filter((m: { state: string }) => m.state === "speaking").length;
+      expect(speakingCountAfter).toBe(speakingCountBefore + 1);
+
+      // Second chunk should NOT send another state_change:speaking
+      resumeStreamCb.onChunk("base64audiodata2");
+      const speakingCountAfter2 = ws.sentOfType("state_change")
+        .filter((m: { state: string }) => m.state === "speaking").length;
+      expect(speakingCountAfter2).toBe(speakingCountAfter);
+    });
+
     it("resume with no remaining speeches transitions to listening", async () => {
       // Use a lesson with only title + 1 item
       const shortLesson = [

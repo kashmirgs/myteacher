@@ -1,5 +1,8 @@
 import { useRef, useCallback } from 'react';
 
+const AudioContextCtor: typeof AudioContext =
+  window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext!;
+
 // VAD configuration
 const VAD_THRESHOLD = 0.012; // Normal (TTS not playing)
 const VAD_INTERRUPT_THRESHOLD = 0.015; // Higher during TTS to guard against AEC residual
@@ -101,7 +104,7 @@ export function useVAD(options: UseVADOptions) {
 
     // Create separate AudioContext at native sample rate (not 24kHz TTS context)
     if (!audioCtxRef.current || audioCtxRef.current.state === 'closed') {
-      audioCtxRef.current = new AudioContext();
+      audioCtxRef.current = new AudioContextCtor();
     }
     const ctx = audioCtxRef.current;
     if (ctx.state === 'suspended') {

@@ -67,7 +67,11 @@ export function handleConnection(ws: WebSocket): void {
 
     if (!session.transition("processing")) return;
 
-    // Generation counter — incremented on abort/new-stream so stale callbacks become no-ops
+    // ⚠️ AUDIO PIPELINE — Generation counters (llmGeneration, sttGeneration)
+    // are the primary mechanism to invalidate stale async callbacks.
+    // Every abort/restart increments the counter; callbacks compare against
+    // their captured value and become no-ops if mismatched.
+    // Without this, audio from old streams bleeds into new sessions.
     const gen = ++llmGeneration;
 
     let buffer = "";
@@ -87,10 +91,15 @@ export function handleConnection(ws: WebSocket): void {
           firstTtsChunkSent = false;
         }
       },
+      // ⚠️ AUDIO PIPELINE — When isLessonNarrating, onEnd triggers resumeLesson()
+      // instead of sending tts_end. This keeps the client audio player in playing
+      // mode so resumed lesson chunks append seamlessly. The state_change:speaking
+      // sent here is for VAD reset + grace period, NOT for audioPlayer.start().
       onEnd: () => {
         if (session.getState() !== "speaking") return;
         if (isLessonNarrating) {
           console.log(`[handler] Q&A TTS ended, resuming lesson from idx ${lastRevealedIdx + 1}`);
+          send({ type: "state_change", state: "speaking" });
           resumeLesson(lastRevealedIdx + 1);
           return;
         }
@@ -219,6 +228,13 @@ export function handleConnection(ws: WebSocket): void {
     }, delayMs);
   }
 
+  // ⚠️ AUDIO PIPELINE — resumeLesson() must NOT send tts_start or tts_end
+  // before feeding chunks. The client audio player is still in "playing" mode
+  // from the Q&A response. Sending tts_start would trigger start() →
+  // cancelScheduledValues() → Safari audio death. Sending tts_end before
+  // resume chunks would trigger flush() → isPlayingRef=false → next
+  // state_change:speaking would call start() (same Safari death).
+  // The flow is: Q&A onEnd → state_change:speaking → tts_chunks directly.
   /** Resume lesson narration from a given speech index after a barge-in Q&A. */
   function resumeLesson(fromIdx: number) {
     const remaining = lessonSpeeches.slice(fromIdx);
@@ -238,10 +254,20 @@ export function handleConnection(ws: WebSocket): void {
     // No tts_start — client audio player is still in playing mode from the Q&A response.
     // This avoids flush()/start() which could disrupt the audio pipeline.
 
+    let firstResumeChunk = true;
     const ttsHandle = tts.openStream({
       onStart: () => {},
       onChunk: (audio) => {
         if (gen !== llmGeneration) return;
+        // ⚠️ AUDIO PIPELINE — Re-send state_change:speaking on first chunk so the
+        // client resets its barge-in grace period (500ms) to align with when audio
+        // actually starts playing. Without this, the grace period (set when Q&A
+        // onEnd fires) expires before resume audio reaches the speakers, and echo
+        // from the resume audio triggers a false barge-in → audio death.
+        if (firstResumeChunk) {
+          firstResumeChunk = false;
+          send({ type: "state_change", state: "speaking" });
+        }
         send({ type: "tts_chunk", audio });
       },
       onEnd: () => {
@@ -362,6 +388,9 @@ export function handleConnection(ws: WebSocket): void {
         break;
       }
 
+      // ⚠️ AUDIO PIPELINE — barge_in preserves isLessonNarrating flag.
+      // This tells the Q&A onEnd callback to call resumeLesson() instead of
+      // transitioning to listening. Do NOT reset isLessonNarrating here.
       case "barge_in": {
         const state = session.getState();
         console.log("[handler] barge_in received, state=", state, "isLessonNarrating=", isLessonNarrating, "lastRevealedIdx=", lastRevealedIdx);
@@ -410,7 +439,12 @@ export function handleConnection(ws: WebSocket): void {
         }
 
         // Extract speeches, store clean board items
-        const speeches = lessonItems.map(it => (it as any).speech || it.text || "");
+        const speeches = lessonItems.map((it) => {
+          const speech = (it as { speech?: string }).speech;
+          if (speech) return speech;
+          if ('text' in it && typeof it.text === 'string') return it.text;
+          return '';
+        });
         boardItems = lessonItems.map(it => {
           const { speech, ...rest } = it as any;
           return rest as BoardItem;

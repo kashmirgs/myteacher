@@ -9,8 +9,12 @@ import {
   buildLessonPrompt,
   buildAnnotationContext,
 } from "./claude.js";
+import type { ConversationHistory } from "./conversation.js";
 
 export function createGeminiLLMService(): LLMService {
+  if (!process.env.GOOGLE_API_KEY) {
+    throw new Error('GOOGLE_API_KEY is missing. Set it or use LLM_PROVIDER=mock.');
+  }
   const ai = new GoogleGenAI({ apiKey: process.env.GOOGLE_API_KEY });
 
   return {
@@ -22,7 +26,7 @@ export function createGeminiLLMService(): LLMService {
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
           const response = await ai.models.generateContent({
-            model: "gemini-2.5-flash",
+            model: "gemini-3.1-flash-lite-preview",
             contents: [{ role: "user", parts: [{ text: prompt }] }],
             config: {
               systemInstruction: LESSON_SYSTEM_PROMPT,
@@ -51,7 +55,7 @@ export function createGeminiLLMService(): LLMService {
       return response.text ?? "";
     },
 
-    streamSpeechResponse(transcript: string, callbacks: LLMStreamCallbacks): LLMStreamHandle {
+    streamSpeechResponse(transcript: string, history: ConversationHistory, callbacks: LLMStreamCallbacks): LLMStreamHandle {
       console.log(`[llm:gemini] streaming speech response for: "${transcript.slice(0, 60)}..."`);
 
       const controller = new AbortController();
@@ -60,7 +64,7 @@ export function createGeminiLLMService(): LLMService {
         try {
           const response = await ai.models.generateContentStream({
             model: "gemini-3.1-flash-lite-preview",
-            contents: [{ role: "user", parts: [{ text: transcript }] }],
+            contents: history.getMessagesForGemini(),
             config: {
               systemInstruction: SPEECH_SYSTEM_PROMPT,
               maxOutputTokens: 512,
@@ -86,15 +90,20 @@ export function createGeminiLLMService(): LLMService {
       return { abort: () => controller.abort() };
     },
 
-    async answerAnnotation(boardItems: BoardItem[], clickedIndex: number, question: string): Promise<string> {
+    async answerAnnotation(boardItems: BoardItem[], clickedIndex: number, question: string, history: ConversationHistory): Promise<string> {
       console.log(`[llm:gemini] annotation click index=${clickedIndex}, question="${question}"`);
 
       const boardContext = buildAnnotationContext(boardItems, clickedIndex);
       const q = question || "Bu ne demek?";
 
+      const contents = [
+        ...history.getMessagesForGemini(),
+        { role: "user" as const, parts: [{ text: `Tahta içeriği:\n${boardContext}\n\nSoru: ${q}` }] },
+      ];
+
       const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: [{ role: "user", parts: [{ text: `Tahta içeriği:\n${boardContext}\n\nSoru: ${q}` }] }],
+        model: "gemini-3.1-flash-lite-preview",
+        contents,
         config: {
           systemInstruction: ANNOTATION_SYSTEM_PROMPT,
           maxOutputTokens: 512,

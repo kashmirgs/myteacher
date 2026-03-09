@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Test 5 — Ogrenci Annotasyon + Baglam Testi</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --border: #2a2d3a;
+    --text: #e1e4ed;
+    --muted: #8b8fa3;
+    --green: #22c55e;
+    --red: #ef4444;
+    --blue: #3b82f6;
+    --yellow: #eab308;
+    --purple: #a855f7;
+    --board-bg: #1a3a2a;
+    --board-text: #e8e8d8;
+    --chalk: #f0f0e0;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', monospace;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  /* ─── Top bar ─── */
+  .top-bar {
+    height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 20px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  .top-bar-title { font-size: 13px; font-weight: 700; }
+  .top-bar-status { font-size: 12px; color: var(--muted); }
+
+  .layout {
+    display: flex;
+    height: calc(100vh - 44px);
+  }
+
+  /* ─── Board (left 65%) ─── */
+  .board-panel {
+    flex: 0 0 65%;
+    background: var(--board-bg);
+    padding: 32px 40px;
+    overflow-y: auto;
+    position: relative;
+    border-right: 2px solid #2a4a3a;
+  }
+  .board-panel::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background:
+      repeating-linear-gradient(0deg, transparent, transparent 39px, rgba(255,255,255,0.03) 39px, rgba(255,255,255,0.03) 40px);
+    pointer-events: none;
+  }
+  .board-panel .chalk-tray {
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 8px;
+    background: linear-gradient(to bottom, #3a2a1a, #2a1a0a);
+  }
+
+  .board-item {
+    margin-bottom: 16px;
+    min-height: 1.2em;
+    position: relative;
+    cursor: pointer;
+    transition: opacity 0.2s;
+  }
+  .board-item.selected {
+    outline: 3px solid var(--blue);
+    outline-offset: 4px;
+    box-shadow: 0 0 12px rgba(59, 130, 246, 0.3);
+  }
+
+  .board-item[data-type="title"] {
+    font-size: 28px;
+    font-weight: 700;
+    text-align: center;
+    color: var(--chalk);
+    text-decoration: underline;
+    text-underline-offset: 6px;
+    margin-bottom: 24px;
+  }
+  .board-item[data-type="text"] {
+    font-size: 20px;
+    color: var(--board-text);
+    line-height: 1.6;
+  }
+  .board-item[data-type="step"] {
+    font-size: 20px;
+    color: var(--board-text);
+    line-height: 1.6;
+  }
+  .board-item[data-type="step"]::before {
+    content: '\2192 ';
+    color: var(--yellow);
+  }
+  .board-item[data-type="formula"] {
+    font-size: 22px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    text-align: center;
+    color: var(--yellow);
+    margin: 12px 0;
+    letter-spacing: 1px;
+    white-space: pre-line;
+  }
+  .board-item[data-type="highlight"] {
+    font-size: 20px;
+    color: var(--chalk);
+    background: rgba(34, 197, 94, 0.15);
+    border: 1px solid rgba(34, 197, 94, 0.3);
+    border-radius: 6px;
+    padding: 10px 16px;
+    margin: 8px 0;
+  }
+
+  /* AI response inline bubble */
+  .ai-response-inline {
+    margin: 16px 0;
+    padding: 12px 16px;
+    background: rgba(168, 85, 247, 0.15);
+    border: 1px solid rgba(168, 85, 247, 0.3);
+    border-radius: 8px;
+    color: #d8b4fe;
+    font-size: 16px;
+  }
+
+  /* ─── Dashboard (right 35%) ─── */
+  .dashboard {
+    flex: 0 0 35%;
+    background: var(--bg);
+    padding: 16px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .panel-section {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px;
+  }
+  .panel-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--muted);
+    margin-bottom: 10px;
+  }
+
+  /* Current scenario + progress */
+  .current-topic {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 8px;
+    min-height: 1.2em;
+  }
+  .progress-bar-container {
+    height: 6px;
+    background: var(--bg);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .progress-bar {
+    height: 100%;
+    width: 0%;
+    background: var(--blue);
+    border-radius: 3px;
+    transition: width 0.3s;
+  }
+  .progress-label {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 4px;
+  }
+
+  /* Results table */
+  .results-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
+  }
+  .results-table th {
+    text-align: left;
+    color: var(--muted);
+    font-weight: 600;
+    padding: 4px 5px;
+    border-bottom: 1px solid var(--border);
+    font-size: 10px;
+    text-transform: uppercase;
+  }
+  .results-table td {
+    padding: 5px 5px;
+    border-bottom: 1px solid rgba(42, 45, 58, 0.5);
+    vertical-align: middle;
+  }
+  .results-table tr.active-row {
+    background: rgba(59, 130, 246, 0.08);
+  }
+
+  .badge {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 700;
+  }
+  .badge.pass { background: rgba(34,197,94,0.15); color: var(--green); }
+  .badge.fail { background: rgba(239,68,68,0.15); color: var(--red); }
+  .badge.warn { background: rgba(234,179,8,0.15); color: var(--yellow); }
+  .badge.pending { background: rgba(139,143,163,0.1); color: var(--muted); }
+
+  /* Overall verdict */
+  .verdict-section {
+    text-align: center;
+    padding: 16px;
+  }
+  .verdict-badge {
+    display: inline-block;
+    padding: 8px 24px;
+    border-radius: 8px;
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+  }
+  .verdict-badge.pass { background: rgba(34,197,94,0.15); color: var(--green); border: 2px solid rgba(34,197,94,0.3); }
+  .verdict-badge.partial { background: rgba(234,179,8,0.15); color: var(--yellow); border: 2px solid rgba(234,179,8,0.3); }
+  .verdict-badge.fail { background: rgba(239,68,68,0.15); color: var(--red); border: 2px solid rgba(239,68,68,0.3); }
+
+  /* Buttons */
+  .btn {
+    padding: 10px 16px;
+    border: none;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.2s;
+    width: 100%;
+  }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn:hover:not(:disabled) { opacity: 0.85; }
+  .btn-primary { background: var(--blue); color: white; }
+</style>
+</head>
+<body>
+
+<div class="top-bar">
+  <span class="top-bar-title">Test 5 — Ogrenci Annotasyon + Baglam</span>
+  <span class="top-bar-status" id="topStatus">Hazir</span>
+</div>
+
+<div class="layout">
+  <!-- Board -->
+  <div class="board-panel" id="board">
+    <div class="chalk-tray"></div>
+  </div>
+
+  <!-- Dashboard -->
+  <div class="dashboard">
+    <!-- Run button -->
+    <div class="panel-section">
+      <button class="btn btn-primary" id="runBtn">Tumunu Calistir</button>
+    </div>
+
+    <!-- Current scenario + progress -->
+    <div class="panel-section">
+      <div class="panel-title">Guncel Senaryo</div>
+      <div class="current-topic" id="currentScenario">-</div>
+      <div class="progress-bar-container">
+        <div class="progress-bar" id="progressBar"></div>
+      </div>
+      <div class="progress-label" id="progressLabel">0 / 10</div>
+    </div>
+
+    <!-- Results table -->
+    <div class="panel-section">
+      <div class="panel-title">Sonuclar</div>
+      <table class="results-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Senaryo</th>
+            <th>Item</th>
+            <th>Baglam</th>
+            <th>Sure</th>
+            <th>Durum</th>
+          </tr>
+        </thead>
+        <tbody id="resultsBody"></tbody>
+      </table>
+    </div>
+
+    <!-- Overall verdict -->
+    <div class="panel-section verdict-section" id="verdictSection" style="display:none">
+      <div class="panel-title">Genel Sonuc</div>
+      <div class="verdict-badge" id="verdictBadge"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const SCENARIOS = [
+  { id: 1, name: 'Ilk title',          target: { type: 'title',     nth: 0 }, question: 'Bu ne demek?' },
+  { id: 2, name: 'Ilk formula',        target: { type: 'formula',   nth: 0 }, question: 'Bunu anlamadim' },
+  { id: 3, name: 'Ilk step',           target: { type: 'step',      nth: 0 }, question: 'Neden boyle yaptik?' },
+  { id: 4, name: 'Ilk highlight',      target: { type: 'highlight', nth: 0 }, question: 'Bunu kontrol edebilir miyiz?' },
+  { id: 5, name: 'Index 0',            target: { index: 0 },                  question: 'Bastan anlatir misin?' },
+  { id: 6, name: 'Son item',           target: { index: -1 },                 question: 'Sonuc dogru mu?' },
+  { id: 7, name: '2. formula',         target: { type: 'formula',   nth: 1 }, question: 'Baska ornek verir misin?' },
+  { id: 8, name: 'Bos soru',           target: { type: 'step',      nth: 0 }, question: '' },
+  { id: 9, name: 'Cift tiklama',       target: { type: 'formula', nth: 0, then: { type: 'step', nth: 0 } }, question: 'Bunu aciklar misin?' },
+  { id: 10, name: 'Ortadaki item',     target: { index: 'mid' },              question: 'Bunu aciklar misin?' },
+];
+
+const VALID_TYPES = new Set(['title', 'text', 'step', 'formula', 'highlight']);
+
+const board = document.getElementById('board');
+const runBtn = document.getElementById('runBtn');
+const currentScenarioEl = document.getElementById('currentScenario');
+const progressBar = document.getElementById('progressBar');
+const progressLabel = document.getElementById('progressLabel');
+const resultsBody = document.getElementById('resultsBody');
+const verdictSection = document.getElementById('verdictSection');
+const verdictBadge = document.getElementById('verdictBadge');
+const topStatus = document.getElementById('topStatus');
+
+let running = false;
+let boardItems = []; // current board items from LLM
+
+// ─── Helpers ───
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function escapeHtml(s) {
+  const div = document.createElement('div');
+  div.textContent = s;
+  return div.innerHTML;
+}
+
+function escapeAttr(s) {
+  return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// ─── Clear board ───
+function clearBoard() {
+  const tray = board.querySelector('.chalk-tray');
+  board.innerHTML = '';
+  board.appendChild(tray);
+}
+
+// ─── Render all board items instantly (no typewriter) ───
+function renderBoardInstant(items) {
+  clearBoard();
+  items.forEach((item, index) => {
+    const type = item.type;
+    if (!type || !VALID_TYPES.has(type)) return;
+
+    const el = document.createElement('div');
+    el.className = 'board-item';
+    el.dataset.type = type;
+    el.dataset.index = index;
+
+    let displayText = item.text || '';
+    if (type === 'formula') {
+      displayText = displayText.replace(/ • /g, '\n');
+    }
+    el.textContent = displayText;
+    board.appendChild(el);
+  });
+}
+
+// ─── Find item index by scenario target ───
+function findItemIndex(items, target) {
+  // Explicit index
+  if (target.index !== undefined) {
+    if (target.index === 'mid') return Math.floor(items.length / 2);
+    if (target.index === -1) return items.length - 1;
+    return Math.min(target.index, items.length - 1);
+  }
+
+  // Type + nth
+  const { type, nth } = target;
+  let count = 0;
+  for (let i = 0; i < items.length; i++) {
+    if (items[i].type === type) {
+      if (count === nth) return i;
+      count++;
+    }
+  }
+
+  // Fallback: last match of same type, or index 0
+  for (let i = items.length - 1; i >= 0; i--) {
+    if (items[i].type === type) return i;
+  }
+  return 0;
+}
+
+// ─── Select an item on board (visual) ───
+function selectBoardItem(index) {
+  board.querySelectorAll('.board-item.selected').forEach(el => el.classList.remove('selected'));
+  const el = board.querySelector(`.board-item[data-index="${index}"]`);
+  if (el) {
+    el.classList.add('selected');
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+}
+
+// ─── Clear selection and response bubbles ───
+function clearSelectionAndBubbles() {
+  board.querySelectorAll('.board-item.selected').forEach(el => el.classList.remove('selected'));
+  board.querySelectorAll('.ai-response-inline').forEach(el => el.remove());
+}
+
+// ─── Show AI response bubble below selected item ───
+function showResponseBubble(index, text) {
+  const el = board.querySelector(`.board-item[data-index="${index}"]`);
+  if (!el) return;
+  const bubble = document.createElement('div');
+  bubble.className = 'ai-response-inline';
+  bubble.textContent = text;
+  el.after(bubble);
+}
+
+// ─── Context correctness heuristic ───
+const TURKISH_NUMBERS = {
+  '0':'sıfır','1':'bir','2':'iki','3':'üç','4':'dört','5':'beş',
+  '6':'altı','7':'yedi','8':'sekiz','9':'dokuz','10':'on','11':'on bir',
+  '12':'on iki','20':'yirmi','30':'otuz','50':'elli','100':'yüz',
+};
+
+function checkContextCorrectness(aiResponse, clickedItem) {
+  const itemText = (clickedItem.text || '').toLowerCase();
+  // Extract words >2 chars from item text (lowered from 4 to catch short Turkish words)
+  const words = itemText.match(/[a-zA-ZçğıöşüÇĞİÖŞÜâîû]{3,}/g) || [];
+  // Extract numbers from item text
+  const numbers = itemText.match(/\d+/g) || [];
+
+  const tokens = [...words, ...numbers];
+
+  // If no checkable tokens, auto-pass
+  if (tokens.length === 0) return true;
+
+  const responseLower = aiResponse.toLowerCase();
+
+  // Check direct token match
+  if (tokens.some(token => responseLower.includes(token.toLowerCase()))) return true;
+
+  // Fallback: check if numbers appear as Turkish words in response
+  if (numbers.some(n => {
+    const turkishWord = TURKISH_NUMBERS[n];
+    return turkishWord && responseLower.includes(turkishWord);
+  })) return true;
+
+  return false;
+}
+
+// ─── Initialize results table ───
+function initTable() {
+  resultsBody.innerHTML = '';
+  SCENARIOS.forEach((sc, i) => {
+    const tr = document.createElement('tr');
+    tr.id = `row-${i}`;
+    tr.innerHTML = `
+      <td>${sc.id}</td>
+      <td title="${escapeAttr(sc.name)}">${escapeHtml(sc.name)}</td>
+      <td id="r${i}-item"><span class="badge pending">-</span></td>
+      <td id="r${i}-ctx"><span class="badge pending">-</span></td>
+      <td id="r${i}-ms">-</td>
+      <td id="r${i}-status"><span class="badge pending">BEKLIYOR</span></td>
+    `;
+    resultsBody.appendChild(tr);
+  });
+}
+
+// ─── Run all scenarios ───
+async function runAll() {
+  if (running) return;
+  running = true;
+  runBtn.disabled = true;
+  topStatus.textContent = 'Board olusturuluyor...';
+  verdictSection.style.display = 'none';
+  initTable();
+
+  // Step 1: Generate board via test4 endpoint
+  try {
+    const resp = await fetch('/api/test4/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ topic: 'Birinci derece denklemleri anlat' }),
+    });
+    const data = await resp.json();
+    if (!data.success || !Array.isArray(data.items)) {
+      topStatus.textContent = 'Board olusturulamadi: ' + (data.error || 'bilinmeyen hata');
+      running = false;
+      runBtn.disabled = false;
+      return;
+    }
+    boardItems = data.items;
+  } catch (e) {
+    topStatus.textContent = 'Board olusturma hatasi: ' + e.message;
+    running = false;
+    runBtn.disabled = false;
+    return;
+  }
+
+  // Step 2: Render board instantly
+  renderBoardInstant(boardItems);
+  topStatus.textContent = 'Senaryolar calistiriliyor...';
+
+  // Step 3: Run 10 scenarios sequentially
+  let passCount = 0;
+
+  for (let i = 0; i < SCENARIOS.length; i++) {
+    const sc = SCENARIOS[i];
+
+    // Highlight active row
+    document.querySelectorAll('.results-table tr.active-row').forEach(tr => tr.classList.remove('active-row'));
+    const row = document.getElementById(`row-${i}`);
+    if (row) row.classList.add('active-row');
+
+    currentScenarioEl.textContent = `#${sc.id} ${sc.name}`;
+    progressBar.style.width = (i / SCENARIOS.length * 100) + '%';
+    progressLabel.textContent = `${i} / ${SCENARIOS.length}`;
+    topStatus.textContent = `Senaryo ${sc.id}/10: ${sc.name}`;
+
+    clearSelectionAndBubbles();
+
+    let targetIndex;
+    let itemOk = false;
+    let ctxOk = false;
+    let llmMs = 0;
+    let statusText = 'HATA';
+
+    try {
+      // Scenario 9: double-click simulation
+      if (sc.target.then) {
+        const firstIndex = findItemIndex(boardItems, sc.target);
+        selectBoardItem(firstIndex);
+        await sleep(100);
+        targetIndex = findItemIndex(boardItems, sc.target.then);
+        selectBoardItem(targetIndex);
+      } else {
+        targetIndex = findItemIndex(boardItems, sc.target);
+        selectBoardItem(targetIndex);
+      }
+
+      // Wait for visual
+      await sleep(400);
+
+      // Call test5/ask
+      const askResp = await fetch('/api/test5/ask', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items: boardItems,
+          clicked_index: targetIndex,
+          question: sc.question,
+        }),
+      });
+      const askData = await askResp.json();
+
+      if (askData.success) {
+        llmMs = askData.llm_ms || 0;
+
+        // Show response bubble
+        showResponseBubble(targetIndex, askData.response);
+
+        // Check: item correct
+        itemOk = askData.clicked_index === targetIndex;
+
+        // Check: context correct
+        ctxOk = checkContextCorrectness(askData.response, boardItems[targetIndex]);
+
+        // Update cells
+        document.getElementById(`r${i}-item`).innerHTML = itemOk
+          ? '<span class="badge pass">OK</span>'
+          : '<span class="badge fail">YANLIS</span>';
+        document.getElementById(`r${i}-ctx`).innerHTML = ctxOk
+          ? '<span class="badge pass">OK</span>'
+          : '<span class="badge fail">YANLIS</span>';
+        document.getElementById(`r${i}-ms`).textContent = llmMs + 'ms';
+
+        const passed = itemOk && ctxOk;
+        if (passed) {
+          passCount++;
+          statusText = 'GECTI';
+        } else {
+          statusText = 'KISMI';
+        }
+      } else {
+        document.getElementById(`r${i}-item`).innerHTML = '<span class="badge fail">-</span>';
+        document.getElementById(`r${i}-ctx`).innerHTML = '<span class="badge fail">-</span>';
+        statusText = 'BASARISIZ';
+      }
+    } catch (e) {
+      console.error(`Scenario ${sc.id} error:`, e);
+      document.getElementById(`r${i}-item`).innerHTML = '<span class="badge fail">HATA</span>';
+      document.getElementById(`r${i}-ctx`).innerHTML = '<span class="badge fail">HATA</span>';
+      statusText = 'BASARISIZ';
+    }
+
+    // Update status cell
+    const badgeClass = statusText === 'GECTI' ? 'pass' : statusText === 'KISMI' ? 'warn' : 'fail';
+    document.getElementById(`r${i}-status`).innerHTML = `<span class="badge ${badgeClass}">${statusText}</span>`;
+
+    // Remove active row
+    if (row) row.classList.remove('active-row');
+
+    // Progress
+    progressBar.style.width = ((i + 1) / SCENARIOS.length * 100) + '%';
+    progressLabel.textContent = `${i + 1} / ${SCENARIOS.length}`;
+
+    // Wait between scenarios (except last)
+    if (i < SCENARIOS.length - 1) {
+      await sleep(800);
+    }
+  }
+
+  // Clear last selection/bubble
+  clearSelectionAndBubbles();
+
+  // Overall verdict
+  verdictSection.style.display = '';
+  if (passCount >= 8) {
+    verdictBadge.className = 'verdict-badge pass';
+    verdictBadge.textContent = `GECTI ${passCount}/${SCENARIOS.length}`;
+  } else if (passCount >= 6) {
+    verdictBadge.className = 'verdict-badge partial';
+    verdictBadge.textContent = `KISMI ${passCount}/${SCENARIOS.length}`;
+  } else {
+    verdictBadge.className = 'verdict-badge fail';
+    verdictBadge.textContent = `BASARISIZ ${passCount}/${SCENARIOS.length}`;
+  }
+
+  currentScenarioEl.textContent = 'Tamamlandi';
+  topStatus.textContent = `Test tamamlandi — ${passCount}/${SCENARIOS.length} gecti`;
+  running = false;
+  runBtn.disabled = false;
+}
+
+// ─── Init ───
+initTable();
+runBtn.addEventListener('click', runAll);
+</script>
+</body>
+</html>

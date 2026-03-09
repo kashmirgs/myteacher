@@ -96,17 +96,18 @@ export function createTTSService(): TTSService {
 
           if (msg.type === 'chunk' && msg.data) {
             chunkCount++;
+            if (chunkCount === 1) console.log('[tts] first audio chunk from cartesia');
             callbacks.onChunk(msg.data);
           } else if (msg.type === 'done') {
             console.log(`[tts] cartesia stream done (${chunkCount} chunks)`);
             active = false;
             callbacks.onEnd();
-            cleanup();
+            if (currentContextId === contextId) cleanup();
           } else if (msg.type === 'error') {
             console.error('[tts] cartesia error:', msg.message || msg);
             active = false;
             callbacks.onEnd();
-            cleanup();
+            if (currentContextId === contextId) cleanup();
           } else {
             console.log('[tts] cartesia unhandled msg:', msg.type, JSON.stringify(msg).slice(0, 200));
           }
@@ -122,7 +123,7 @@ export function createTTSService(): TTSService {
           active = false;
           callbacks.onEnd();
         }
-        cleanup();
+        if (currentContextId === contextId) cleanup();
       });
 
       ws.on('close', () => {
@@ -150,7 +151,11 @@ export function createTTSService(): TTSService {
       const pendingClauses: { text: string; isFinal: boolean }[] = [];
 
       function sendClause(text: string, isFinal: boolean) {
-        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          console.warn('[tts] sendClause skipped — ws not open');
+          return;
+        }
+        console.log(`[tts] sendClause (${text.length} chars, final=${isFinal}): "${text.slice(0, 50)}..."`);
         const request = {
           model_id: MODEL_ID,
           transcript: text,
@@ -183,17 +188,22 @@ export function createTTSService(): TTSService {
 
           if (msg.type === 'chunk' && msg.data) {
             chunkCount++;
+            if (chunkCount === 1) console.log('[tts] first audio chunk from cartesia');
             callbacks.onChunk(msg.data);
           } else if (msg.type === 'done') {
             console.log(`[tts] cartesia stream done (${chunkCount} chunks)`);
             active = false;
+            // onEnd may open a new stream (e.g. lesson resume), so only
+            // clean up if no new stream was started during the callback.
             callbacks.onEnd();
-            cleanup();
+            if (currentContextId === contextId) cleanup();
           } else if (msg.type === 'error') {
             console.error('[tts] cartesia error:', msg.message || msg);
             active = false;
             callbacks.onEnd();
-            cleanup();
+            if (currentContextId === contextId) cleanup();
+          } else {
+            console.log('[tts] cartesia unhandled msg:', msg.type, JSON.stringify(msg).slice(0, 200));
           }
         } catch (err) {
           console.error('[tts] failed to parse cartesia message:', err);
@@ -207,7 +217,7 @@ export function createTTSService(): TTSService {
           active = false;
           callbacks.onEnd();
         }
-        cleanup();
+        if (currentContextId === contextId) cleanup();
       });
 
       ws.on('close', () => {
@@ -221,7 +231,7 @@ export function createTTSService(): TTSService {
 
       return {
         feed(text: string, isFinal: boolean) {
-          if (!active) return;
+          if (!active || currentContextId !== contextId) return;
           if (!ready) {
             pendingClauses.push({ text, isFinal });
             return;
