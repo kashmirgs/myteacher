@@ -5,6 +5,7 @@ import { createSTTService } from "../services/deepgram.js";
 import { createLLMService, type LLMStreamHandle, type LessonBoardItem } from "../services/claude.js";
 import { createTTSService } from "../services/cartesia.js";
 import { ConversationHistory } from "../services/conversation.js";
+import { getTopicById } from "../db/repository.js";
 
 /** Detect clause boundary: `.` `?` `!` followed by space or end-of-string, min 10 chars */
 function extractClause(buffer: string): { clause: string; remaining: string } | null {
@@ -16,6 +17,15 @@ function extractClause(buffer: string): { clause: string; remaining: string } | 
     return { clause, remaining };
   }
   return null;
+}
+
+const RESUME_PATTERNS =
+  /^(devam|devam\s+et|derse\s+devam|derse\s+devam\s+et|devam\s+edelim|sürdür|geç|tamam\s+devam|evet\s+devam)\b/i;
+
+function isResumeCommand(text: string): boolean {
+  // Strip punctuation and normalize whitespace for robust matching
+  const cleaned = text.trim().replace(/[.,!?;:]+$/g, "").trim();
+  return RESUME_PATTERNS.test(cleaned);
 }
 
 export function handleConnection(ws: WebSocket): void {
@@ -39,6 +49,7 @@ export function handleConnection(ws: WebSocket): void {
   let lessonSpeeches: string[] = [];
   let isLessonNarrating = false;
   let lastRevealedIdx = 0;
+  let lastQAResponseLength = 0;
 
   const send = (msg: ServerMessage) => {
     if (ws.readyState === ws.OPEN) {
@@ -55,6 +66,22 @@ export function handleConnection(ws: WebSocket): void {
   /** Start a speech response cycle: streaming LLM → clause-based TTS → back to listening */
   function handleFinalTranscript(text: string) {
     if (session.getState() !== "listening") return;
+
+    // Ders anlatımı sırasında "devam et" benzeri ifadeler → LLM'i atla, direkt resume
+    if (isLessonNarrating) {
+      const resume = isResumeCommand(text);
+      console.log(`[handler] transcript during lesson: "${text}", isResumeCommand=${resume}, lastRevealedIdx=${lastRevealedIdx}`);
+      if (resume) {
+        if (!session.transition("processing")) return;
+        if (!session.transition("speaking")) return;
+        // Client audio player was stopped by barge-in, so send tts_start
+        // (unlike auto-resume from Q&A onEnd where client is still playing)
+        send({ type: "tts_start" });
+        resumeLesson(lastRevealedIdx + 1);
+        return;
+      }
+    }
+
     const t0 = performance.now();
     let t1 = 0,
       t2 = 0,
@@ -153,6 +180,7 @@ export function handleConnection(ws: WebSocket): void {
 
       onDone(fullText) {
         if (gen !== llmGeneration) return;
+        if (isLessonNarrating) lastQAResponseLength = fullText.length;
         history.addAssistantMessage(fullText);
         send({ type: "transcript", text: fullText, isFinal: true });
 
@@ -287,8 +315,17 @@ export function handleConnection(ws: WebSocket): void {
 
     send({ type: "transcript", text: remainingNonEmpty.join(" "), isFinal: true });
 
+    // Transition prefix prepended to the first speech so Cartesia produces
+    // a natural pause. Long Q&A → spoken phrase; short Q&A → brief "Peki."
+    // Feeding separately can cause Cartesia to end the stream early, so we
+    // prepend to the first speech text instead.
+    const isTest = process.env.NODE_ENV === "test";
+    const transitionPrefix = isTest ? "" : lastQAResponseLength > 150 ? "Şimdi derse devam edelim. " : ". ";
+    lastQAResponseLength = 0;
+
     const MS_PER_CHAR = 65;
-    let cumulativeDelay = 0;
+    let cumulativeDelay = transitionPrefix.length * MS_PER_CHAR;
+    let isFirstSpeech = true;
 
     for (let i = fromIdx; i < lessonSpeeches.length; i++) {
       const speech = lessonSpeeches[i];
@@ -310,10 +347,97 @@ export function handleConnection(ws: WebSocket): void {
         send({ type: "board_reveal", index: i });
       }
 
+      const feedText = isFirstSpeech ? transitionPrefix + speech + " " : speech + " ";
+      isFirstSpeech = false;
       const isLast = lessonSpeeches.slice(i + 1).every((s) => !s) || i === lessonSpeeches.length - 1;
+      ttsHandle.feed(feedText, isLast);
+      cumulativeDelay += speech.length * MS_PER_CHAR;
+    }
+  }
+
+  /** Start lesson narration from pre-built LessonBoardItems (used by both generate_lesson and start_preset_lesson) */
+  function startNarration(lessonItems: LessonBoardItem[]) {
+    // Extract speeches, store clean board items
+    const speeches = lessonItems.map((it) => {
+      const speech = (it as { speech?: string }).speech;
+      if (speech) return speech;
+      if ("text" in it && typeof it.text === "string") return it.text;
+      return "";
+    });
+    boardItems = lessonItems.map((it) => {
+      const { speech, ...rest } = it as any;
+      return rest as BoardItem;
+    });
+
+    lessonSpeeches = speeches;
+    isLessonNarrating = true;
+    lastRevealedIdx = 0;
+
+    history.addBoardEvent(boardItems);
+    send({ type: "board_update", items: boardItems });
+    send({ type: "board_reveal", index: 0 }); // title immediately
+
+    const gen = ++llmGeneration;
+
+    // Open TTS stream
+    let firstLessonChunk = true;
+    const ttsHandle = tts.openStream({
+      onStart: () => {},
+      onChunk: (audio) => {
+        if (gen !== llmGeneration) return;
+        if (firstLessonChunk) {
+          console.log("[handler] first tts_chunk sent to client");
+          firstLessonChunk = false;
+        }
+        send({ type: "tts_chunk", audio });
+      },
+      onEnd: () => {
+        if (gen !== llmGeneration) return;
+        if (session.getState() !== "speaking") return;
+        isLessonNarrating = false;
+        send({ type: "tts_end" });
+        session.transition("listening");
+        suppressTranscriptsUntil = performance.now() + ttsEndSuppressMs;
+        scheduleSTTStart(ttsEndSTTDelayMs);
+        pendingAudio.length = 0;
+      },
+    });
+
+    if (!session.transition("speaking")) return;
+
+    // Send full transcript
+    const fullSpeech = speeches.filter(Boolean).join(" ");
+    send({ type: "transcript", text: fullSpeech, isFinal: true });
+
+    // Per-item TTS feeding + setTimeout reveal pacing
+    const MS_PER_CHAR = 65;
+    let cumulativeDelay = 0;
+    const feedableSpeeches = speeches.filter(Boolean);
+    console.log(
+      `[handler] lesson speeches: ${feedableSpeeches.length}/${speeches.length} non-empty, total chars=${feedableSpeeches.join(" ").length}`,
+    );
+
+    for (let i = 0; i < lessonItems.length; i++) {
+      const speech = speeches[i];
+      if (!speech) continue;
+
+      if (i > 0) {
+        const delay = cumulativeDelay;
+        revealTimers.push(
+          setTimeout(() => {
+            if (gen !== llmGeneration) return;
+            lastRevealedIdx = i;
+            send({ type: "board_reveal", index: i });
+          }, delay),
+        );
+      }
+
+      const isLast = speeches.slice(i + 1).every((s) => !s) || i === lessonItems.length - 1;
       ttsHandle.feed(speech + " ", isLast);
       cumulativeDelay += speech.length * MS_PER_CHAR;
     }
+
+    currentLLMHandle = null; // no LLM stream to track
   }
 
   ws.on("message", async (raw: RawData, isBinary: boolean) => {
@@ -449,87 +573,31 @@ export function handleConnection(ws: WebSocket): void {
           break;
         }
 
-        // Extract speeches, store clean board items
-        const speeches = lessonItems.map((it) => {
-          const speech = (it as { speech?: string }).speech;
-          if (speech) return speech;
-          if ("text" in it && typeof it.text === "string") return it.text;
-          return "";
-        });
-        boardItems = lessonItems.map((it) => {
-          const { speech, ...rest } = it as any;
-          return rest as BoardItem;
-        });
+        startNarration(lessonItems);
+        break;
+      }
 
-        lessonSpeeches = speeches;
-        isLessonNarrating = true;
-        lastRevealedIdx = 0;
+      case "start_preset_lesson": {
+        console.log(`[handler] start_preset_lesson topicId="${msg.topicId}"`);
+        if (!session.transition("processing")) break;
 
-        history.addBoardEvent(boardItems);
-        send({ type: "board_update", items: boardItems });
-        send({ type: "board_reveal", index: 0 }); // title immediately
-
-        const gen = ++llmGeneration;
-
-        // Open TTS stream
-        let firstLessonChunk = true;
-        const ttsHandle = tts.openStream({
-          onStart: () => {},
-          onChunk: (audio) => {
-            if (gen !== llmGeneration) return;
-            if (firstLessonChunk) {
-              console.log("[handler] first tts_chunk sent to client");
-              firstLessonChunk = false;
-            }
-            send({ type: "tts_chunk", audio });
-          },
-          onEnd: () => {
-            if (gen !== llmGeneration) return;
-            if (session.getState() !== "speaking") return;
-            isLessonNarrating = false;
-            send({ type: "tts_end" });
-            session.transition("listening");
-            suppressTranscriptsUntil = performance.now() + ttsEndSuppressMs;
-            scheduleSTTStart(ttsEndSTTDelayMs);
-            pendingAudio.length = 0;
-          },
-        });
-
-        if (!session.transition("speaking")) break;
-
-        // Send full transcript
-        const fullSpeech = speeches.filter(Boolean).join(" ");
-        send({ type: "transcript", text: fullSpeech, isFinal: true });
-
-        // Per-item TTS feeding + setTimeout reveal pacing
-        const MS_PER_CHAR = 65;
-        let cumulativeDelay = 0;
-        const feedableSpeeches = speeches.filter(Boolean);
-        console.log(
-          `[handler] lesson speeches: ${feedableSpeeches.length}/${speeches.length} non-empty, total chars=${feedableSpeeches.join(" ").length}`,
-        );
-
-        for (let i = 0; i < lessonItems.length; i++) {
-          const speech = speeches[i];
-          if (!speech) continue;
-
-          if (i > 0) {
-            const delay = cumulativeDelay;
-            revealTimers.push(
-              setTimeout(() => {
-                if (gen !== llmGeneration) return;
-                lastRevealedIdx = i;
-                send({ type: "board_reveal", index: i });
-              }, delay),
-            );
-          }
-
-          const isLast = speeches.slice(i + 1).every((s) => !s) || i === lessonItems.length - 1;
-          ttsHandle.feed(speech + " ", isLast);
-          cumulativeDelay += speech.length * MS_PER_CHAR;
+        const topic = getTopicById(msg.topicId);
+        if (!topic) {
+          send({ type: "error", message: "Konu bulunamadı" });
+          session.transition("idle");
+          break;
         }
 
-        currentLLMHandle = null; // no LLM stream to track
+        let lessonItems: LessonBoardItem[];
+        try {
+          lessonItems = JSON.parse(topic.boardItems) as LessonBoardItem[];
+        } catch {
+          send({ type: "error", message: "Konu verisi bozuk" });
+          session.transition("idle");
+          break;
+        }
+
+        startNarration(lessonItems);
         break;
       }
 
