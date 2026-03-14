@@ -147,14 +147,24 @@ function renderShape(shape: Shape, idx: number, yFlipped: boolean, scaleFactor: 
         </g>
       );
     }
-    case "polygon":
+    case "ellipse":
       return (
-        <polygon key={key}
-          points={shape.points.map(([x, y]: [number, number]) => `${x},${y}`).join(" ")}
+        <ellipse key={key} cx={shape.cx} cy={shape.cy} rx={shape.rx} ry={shape.ry}
           stroke={shape.stroke ?? "#e8e8d8"} fill={shape.fill ?? "none"}
           strokeWidth={shape.strokeWidth ?? defStroke}
           className="drawing-shape" />
       );
+    case "polygon": {
+      const pts = shape.points.map((p: any) =>
+        Array.isArray(p) ? `${p[0]},${p[1]}` : `${p.x},${p.y}`
+      ).join(" ");
+      return (
+        <polygon key={key} points={pts}
+          stroke={shape.stroke ?? "#e8e8d8"} fill={shape.fill ?? "none"}
+          strokeWidth={shape.strokeWidth ?? defStroke}
+          className="drawing-shape" />
+      );
+    }
     default:
       return null;
   }
