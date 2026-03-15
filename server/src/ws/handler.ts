@@ -297,28 +297,38 @@ export function handleConnection(ws: WebSocket): void {
     const transitionPrefix = isTest ? "" : lastQAResponseLength > 150 ? "Şimdi derse devam edelim. " : ". ";
     lastQAResponseLength = 0;
 
-    // Pre-compute speech end ratios for remaining speeches (audio-chunk-based reveal timing)
+    // Pre-compute non-space character boundaries for remaining speeches
     const resumeSpeeches = lessonSpeeches.slice(fromIdx);
-    const prefixChars = transitionPrefix.length;
-    const totalResumeChars = prefixChars + resumeSpeeches.reduce((sum, s) => sum + (s?.length ?? 0), 0);
-    const resumeSpeechEndRatios: number[] = [];
-    let cumResumeChars = prefixChars; // prefix is prepended to first speech
+    const prefixNonSpaceChars = transitionPrefix.replace(/\s/g, '').length;
+    const resumeSpeechNonSpaceCumChars: number[] = [];
+    let cumNSResume = prefixNonSpaceChars;
     for (const s of resumeSpeeches) {
-      cumResumeChars += s?.length ?? 0;
-      resumeSpeechEndRatios.push(cumResumeChars / totalResumeChars);
+      cumNSResume += (s ?? '').replace(/\s/g, '').length;
+      resumeSpeechNonSpaceCumChars.push(cumNSResume);
+    }
+    const totalResumeNonSpaceChars = cumNSResume;
+
+    // Pre-compute speech end ratios (non-space based) for fallback timing
+    const resumeSpeechEndRatios: number[] = [];
+    let cumNSResumeRatio = prefixNonSpaceChars;
+    for (const s of resumeSpeeches) {
+      cumNSResumeRatio += (s ?? '').replace(/\s/g, '').length;
+      resumeSpeechEndRatios.push(cumNSResumeRatio / totalResumeNonSpaceChars);
     }
 
     const INITIAL_MS_PER_CHAR = process.env.NODE_ENV === "test" ? 0 : 100;
-    let estimatedResumeDuration = totalResumeChars * INITIAL_MS_PER_CHAR / 1000;
+    let estimatedResumeDuration = totalResumeNonSpaceChars * INITIAL_MS_PER_CHAR / 1000;
     let resumeStartTime = 0;
     let nextResumeRevealIdx = 0; // relative to fromIdx; first one revealed immediately below if no prefix
     let resumeRevealCheckInterval: NodeJS.Timeout | null = null;
 
     // Timestamp-based calibration state
     let cumulativeResumeTimestampChars = 0;
+    let nextResumeBoundaryToResolve = 0;
+    const resumeSpeechBoundaryAudioTimes: number[] = [];
 
     // Reveal first item immediately if no transition prefix
-    if (prefixChars === 0 && resumeSpeeches.length > 0) {
+    if (prefixNonSpaceChars === 0 && resumeSpeeches.length > 0) {
       lastRevealedIdx = fromIdx;
       sendRevealAction(revealActions[fromIdx]);
       nextResumeRevealIdx = 1;
@@ -329,13 +339,19 @@ export function handleConnection(ws: WebSocket): void {
       onStart: () => {},
       onTimestamps: (words, _startTimes, endTimes) => {
         if (gen !== llmGeneration) return;
-        for (let i = 0; i < words.length; i++) {
-          cumulativeResumeTimestampChars += words[i].length;
+        for (let w = 0; w < words.length; w++) {
+          cumulativeResumeTimestampChars += words[w].length;
+          // Detect speech boundary crossings
+          while (nextResumeBoundaryToResolve < resumeSpeechNonSpaceCumChars.length &&
+                 cumulativeResumeTimestampChars >= resumeSpeechNonSpaceCumChars[nextResumeBoundaryToResolve]) {
+            resumeSpeechBoundaryAudioTimes[nextResumeBoundaryToResolve] = endTimes[w];
+            nextResumeBoundaryToResolve++;
+          }
         }
+        // Update estimatedResumeDuration using non-space chars for consistency
         if (cumulativeResumeTimestampChars > 20) {
           const lastEndTime = endTimes[endTimes.length - 1];
-          const dynamicMsPerChar = lastEndTime * 1000 / cumulativeResumeTimestampChars;
-          estimatedResumeDuration = totalResumeChars * dynamicMsPerChar / 1000;
+          estimatedResumeDuration = totalResumeNonSpaceChars * lastEndTime / cumulativeResumeTimestampChars;
         }
       },
       onChunk: (audio) => {
@@ -360,9 +376,19 @@ export function handleConnection(ws: WebSocket): void {
             }
             const elapsedSec = performance.now() / 1000 - resumeStartTime;
             while (nextResumeRevealIdx < resumeSpeeches.length) {
-              const ratioIdx = nextResumeRevealIdx > 0 ? nextResumeRevealIdx - 1 : 0;
-              const ratio = nextResumeRevealIdx === 0 ? 0 : resumeSpeechEndRatios[ratioIdx];
-              const threshold = ratio * estimatedResumeDuration;
+              let threshold: number;
+              if (nextResumeRevealIdx === 0) {
+                threshold = 0;
+              } else {
+                const boundaryIdx = nextResumeRevealIdx - 1;
+                if (boundaryIdx < resumeSpeechBoundaryAudioTimes.length) {
+                  // Exact timing from Cartesia timestamps
+                  threshold = resumeSpeechBoundaryAudioTimes[boundaryIdx];
+                } else {
+                  // Fallback: ratio-based estimate (before timestamps arrive)
+                  threshold = resumeSpeechEndRatios[boundaryIdx] * estimatedResumeDuration;
+                }
+              }
               if (elapsedSec >= threshold) {
                 const globalIdx = fromIdx + nextResumeRevealIdx;
                 lastRevealedIdx = globalIdx;
@@ -494,23 +520,33 @@ export function handleConnection(ws: WebSocket): void {
 
     const gen = ++llmGeneration;
 
-    // Pre-compute speech end ratios for audio-chunk-based reveal timing
-    const totalChars = speeches.reduce((sum, s) => sum + (s?.length ?? 0), 0);
-    const speechEndRatios: number[] = [];
-    let cumChars = 0;
+    // Non-space character boundaries for timestamp-based boundary detection
+    const speechNonSpaceCumChars: number[] = [];
+    let cumNS = 0;
     for (const s of speeches) {
-      cumChars += s?.length ?? 0;
-      speechEndRatios.push(cumChars / totalChars);
+      cumNS += (s ?? '').replace(/\s/g, '').length;
+      speechNonSpaceCumChars.push(cumNS);
+    }
+    const totalNonSpaceChars = cumNS;
+
+    // Pre-compute speech end ratios (non-space based) for fallback timing
+    const speechEndRatios: number[] = [];
+    let cumNSRatio = 0;
+    for (const s of speeches) {
+      cumNSRatio += (s ?? '').replace(/\s/g, '').length;
+      speechEndRatios.push(cumNSRatio / totalNonSpaceChars);
     }
 
     const INITIAL_MS_PER_CHAR = process.env.NODE_ENV === "test" ? 0 : 100;
-    let estimatedTotalDuration = totalChars * INITIAL_MS_PER_CHAR / 1000;
+    let estimatedTotalDuration = totalNonSpaceChars * INITIAL_MS_PER_CHAR / 1000;
     let narrationStartTime = 0;
     let nextRevealIdx = 1; // 0 already revealed
     let revealCheckInterval: NodeJS.Timeout | null = null;
 
     // Timestamp-based calibration state
     let cumulativeTimestampChars = 0;
+    let nextBoundaryToResolve = 0;
+    const speechBoundaryAudioTimes: number[] = [];
 
     // Open TTS stream
     let firstLessonChunk = true;
@@ -518,14 +554,19 @@ export function handleConnection(ws: WebSocket): void {
       onStart: () => {},
       onTimestamps: (words, _startTimes, endTimes) => {
         if (gen !== llmGeneration) return;
-        for (let i = 0; i < words.length; i++) {
-          cumulativeTimestampChars += words[i].length;
+        for (let w = 0; w < words.length; w++) {
+          cumulativeTimestampChars += words[w].length;
+          // Detect speech boundary crossings
+          while (nextBoundaryToResolve < speechNonSpaceCumChars.length &&
+                 cumulativeTimestampChars >= speechNonSpaceCumChars[nextBoundaryToResolve]) {
+            speechBoundaryAudioTimes[nextBoundaryToResolve] = endTimes[w];
+            nextBoundaryToResolve++;
+          }
         }
-        // Calibrate after 20+ chars (first few words unreliable)
+        // Update estimatedTotalDuration using non-space chars for consistency
         if (cumulativeTimestampChars > 20) {
           const lastEndTime = endTimes[endTimes.length - 1];
-          const dynamicMsPerChar = lastEndTime * 1000 / cumulativeTimestampChars;
-          estimatedTotalDuration = totalChars * dynamicMsPerChar / 1000;
+          estimatedTotalDuration = totalNonSpaceChars * lastEndTime / cumulativeTimestampChars;
         }
       },
       onChunk: (audio) => {
@@ -545,8 +586,15 @@ export function handleConnection(ws: WebSocket): void {
             }
             const elapsedSec = performance.now() / 1000 - narrationStartTime;
             while (nextRevealIdx < speeches.length) {
-              const ratio = speechEndRatios[nextRevealIdx - 1];
-              const threshold = ratio * estimatedTotalDuration;
+              const boundaryIdx = nextRevealIdx - 1;
+              let threshold: number;
+              if (boundaryIdx < speechBoundaryAudioTimes.length) {
+                // Exact timing from Cartesia timestamps
+                threshold = speechBoundaryAudioTimes[boundaryIdx];
+              } else {
+                // Fallback: ratio-based estimate (before timestamps arrive)
+                threshold = speechEndRatios[boundaryIdx] * estimatedTotalDuration;
+              }
               if (elapsedSec >= threshold) {
                 lastRevealedIdx = nextRevealIdx;
                 sendRevealAction(actions[nextRevealIdx]);
@@ -620,7 +668,7 @@ export function handleConnection(ws: WebSocket): void {
 
     const feedableSpeeches = speeches.filter(Boolean);
     console.log(
-      `[handler] lesson speeches: ${feedableSpeeches.length}/${speeches.length} non-empty, total chars=${totalChars}`,
+      `[handler] lesson speeches: ${feedableSpeeches.length}/${speeches.length} non-empty, total non-space chars=${totalNonSpaceChars}`,
     );
 
     for (let i = 0; i < speeches.length; i++) {
