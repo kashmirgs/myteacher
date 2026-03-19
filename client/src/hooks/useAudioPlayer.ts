@@ -55,10 +55,10 @@ export function useAudioPlayer() {
 
     if (mediaRouteActiveRef.current && mediaDestRef.current) {
       gain.connect(mediaDestRef.current);
-      console.debug('[audio] route=media');
+      console.debug("[audio] route=media");
     } else {
       gain.connect(ctx.destination);
-      console.debug('[audio] route=destination');
+      console.debug("[audio] route=destination");
     }
   }
 

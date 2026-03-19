@@ -1,12 +1,12 @@
 import { GoogleGenAI } from "@google/genai";
 import type { BoardItem } from "@myteacher/shared";
 import { parseBoardItems } from "../utils/llm-output.js";
-import type { LLMService, LLMStreamCallbacks, LLMStreamHandle, LessonBoardItem } from "./claude.js";
+import type { LLMService, LLMStreamCallbacks, LLMStreamHandle, LessonBoardItem, LessonLength, QuestionOptions } from "./claude.js";
 import {
   SPEECH_SYSTEM_PROMPT,
-  LESSON_SYSTEM_PROMPT,
   ANNOTATION_SYSTEM_PROMPT,
   buildLessonPrompt,
+  buildLessonSystemPrompt,
   buildAnnotationContext,
 } from "./claude.js";
 import type { ConversationHistory } from "./conversation.js";
@@ -18,25 +18,29 @@ export function createGeminiLLMService(): LLMService {
   const ai = new GoogleGenAI({ apiKey: process.env.GOOGLE_API_KEY });
 
   return {
-    async generateLesson(topic: string): Promise<LessonBoardItem[]> {
-      console.log(`[llm:gemini] generating lesson for: ${topic}`);
+    async generateLesson(topic: string, gradeLevel?: number, length?: LessonLength, questionOpts?: QuestionOptions): Promise<LessonBoardItem[]> {
+      console.log(`[llm:gemini] generating lesson for: ${topic} (grade ${gradeLevel ?? "default"}, length ${length ?? "default"})`);
 
-      const prompt = buildLessonPrompt(topic);
+      const prompt = buildLessonPrompt(topic, gradeLevel, length, questionOpts);
+      const systemPrompt = buildLessonSystemPrompt(gradeLevel, length);
 
-      for (let attempt = 0; attempt < 2; attempt++) {
+      // Try pro model first, fall back to flash-lite on failure
+      const models = ["gemini-3.1-pro-preview", "gemini-3.1-flash-lite-preview"] as const;
+      for (const model of models) {
         try {
+          console.log(`[llm:gemini] trying model: ${model}`);
           const response = await ai.models.generateContent({
-            model: "gemini-3.1-flash-lite-preview",
+            model,
             contents: [{ role: "user", parts: [{ text: prompt }] }],
             config: {
-              systemInstruction: LESSON_SYSTEM_PROMPT,
-              maxOutputTokens: 2048,
+              systemInstruction: systemPrompt,
+              maxOutputTokens: 20000,
             },
           });
           return parseBoardItems(response.text ?? "") as LessonBoardItem[];
         } catch (err) {
-          console.warn(`[llm:gemini] generateLesson attempt ${attempt + 1} failed:`, err);
-          if (attempt === 1) throw err;
+          console.warn(`[llm:gemini] generateLesson with ${model} failed:`, err);
+          if (model === models[models.length - 1]) throw err;
         }
       }
 

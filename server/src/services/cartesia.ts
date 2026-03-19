@@ -7,6 +7,7 @@ export interface TTSCallbacks {
   onChunk: (audio: string) => void;
   onStart: () => void;
   onEnd: () => void;
+  onTimestamps?: (words: string[], startTimes: number[], endTimes: number[]) => void;
 }
 
 export interface TTSStreamHandle {
@@ -79,6 +80,7 @@ export function createTTSService(): TTSService {
           },
           context_id: contextId,
           language: 'tr',
+          add_timestamps: true,
         };
 
         ws?.send(JSON.stringify(request));
@@ -98,6 +100,9 @@ export function createTTSService(): TTSService {
             chunkCount++;
             if (chunkCount === 1) console.log('[tts] first audio chunk from cartesia');
             callbacks.onChunk(msg.data);
+          } else if (msg.type === 'timestamps' && msg.word_timestamps && callbacks.onTimestamps) {
+            const wt = msg.word_timestamps;
+            callbacks.onTimestamps(wt.words, wt.start, wt.end);
           } else if (msg.type === 'done') {
             console.log(`[tts] cartesia stream done (${chunkCount} chunks)`);
             active = false;
@@ -163,6 +168,7 @@ export function createTTSService(): TTSService {
           output_format: { container: 'raw', encoding: 'pcm_s16le', sample_rate: 24000 },
           context_id: contextId,
           language: 'tr',
+          add_timestamps: true,
           continue: !isFinal,
         };
         ws.send(JSON.stringify(request));
@@ -190,6 +196,9 @@ export function createTTSService(): TTSService {
             chunkCount++;
             if (chunkCount === 1) console.log('[tts] first audio chunk from cartesia');
             callbacks.onChunk(msg.data);
+          } else if (msg.type === 'timestamps' && msg.word_timestamps && callbacks.onTimestamps) {
+            const wt = msg.word_timestamps;
+            callbacks.onTimestamps(wt.words, wt.start, wt.end);
           } else if (msg.type === 'done') {
             console.log(`[tts] cartesia stream done (${chunkCount} chunks)`);
             active = false;

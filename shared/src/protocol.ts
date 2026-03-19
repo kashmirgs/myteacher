@@ -19,7 +19,9 @@ export type Shape =
   | { type: "polygon"; points: [number, number][];
       fill?: string; stroke?: string; strokeWidth?: number }
   | { type: "ellipse"; cx: number; cy: number; rx: number; ry: number;
-      fill?: string; stroke?: string; strokeWidth?: number };
+      fill?: string; stroke?: string; strokeWidth?: number }
+  | { type: "polyline"; points: [number, number][];
+      stroke?: string; strokeWidth?: number; smooth?: boolean };
 
 export type CoordSystem = {
   xMin: number; xMax: number;
@@ -41,14 +43,15 @@ export type DrawingStep = {
 export type BoardItem =
   | { type: "title"; text: string }
   | { type: "text"; text: string }
-  | { type: "formula"; text: string } // • delimiter → newline in renderer
+  | { type: "formula"; text: string } // multi-line: LLM uses \n directly
   | { type: "list"; items: string[] }
   | { type: "highlight"; text: string }
-  | { type: "drawing"; coordSystem?: CoordSystem; steps: DrawingStep[] };
+  | { type: "drawing"; coordSystem?: CoordSystem; steps: DrawingStep[] }
+  | { type: "question"; text: string; options: string[]; correct: number; explanation: string };
 
 export type BoardItemType = BoardItem["type"];
 
-export const KNOWN_BOARD_TYPES: readonly BoardItemType[] = ["title", "text", "formula", "list", "highlight", "drawing"] as const;
+export const KNOWN_BOARD_TYPES: readonly BoardItemType[] = ["title", "text", "formula", "list", "highlight", "drawing", "question"] as const;
 
 // ── Lesson Topics (preset lessons) ──
 

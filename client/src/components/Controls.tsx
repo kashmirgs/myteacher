@@ -1,4 +1,5 @@
-import type { SessionState } from '@myteacher/shared';
+import { useState, useEffect } from 'react';
+import type { SessionState, TopicSummary } from '@myteacher/shared';
 
 interface ControlsProps {
   isConnected: boolean;
@@ -6,6 +7,7 @@ interface ControlsProps {
   isOpen: boolean;
   onMicToggle: () => void;
   onGenerateLesson: (topic: string) => void;
+  onStartPresetLesson: (topicId: string) => void;
   transcript: string;
   aiResponse: string;
 }
@@ -30,9 +32,22 @@ export function Controls({
   isOpen,
   onMicToggle,
   onGenerateLesson,
+  onStartPresetLesson,
   transcript,
   aiResponse,
 }: ControlsProps) {
+  const [topics, setTopics] = useState<TopicSummary[]>([]);
+  const [selectedTopicId, setSelectedTopicId] = useState('');
+
+  useEffect(() => {
+    fetch('/api/topics')
+      .then((r) => r.json())
+      .then((data) => setTopics(data))
+      .catch(() => {});
+  }, []);
+
+  const busy = sessionState === 'processing' || sessionState === 'speaking';
+
   return (
     <div className="controls">
       <div className="status-row">
@@ -53,6 +68,44 @@ export function Controls({
         <span className="state-label">{STATE_LABELS[sessionState]}</span>
       </div>
 
+      {/* Preset topic selection */}
+      {topics.length > 0 && (
+        <div className="topic-select-group">
+          <select
+            className="topic-select"
+            value={selectedTopicId}
+            onChange={(e) => setSelectedTopicId(e.target.value)}
+            disabled={!isConnected || busy}
+          >
+            <option value="">Hazır konu seç...</option>
+            {topics.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.title} ({t.subject})
+              </option>
+            ))}
+          </select>
+          <button
+            className="topic-start-btn"
+            disabled={!isConnected || busy || !selectedTopicId}
+            onClick={() => {
+              if (selectedTopicId) {
+                onStartPresetLesson(selectedTopicId);
+                setSelectedTopicId('');
+              }
+            }}
+          >
+            Dersi Başlat
+          </button>
+        </div>
+      )}
+
+      {/* Divider when both options are available */}
+      {topics.length > 0 && (
+        <div className="or-divider">
+          <span>veya</span>
+        </div>
+      )}
+
       <form className="lesson-form" onSubmit={(e) => {
         e.preventDefault();
         const input = e.currentTarget.elements.namedItem('topic') as HTMLInputElement;
@@ -61,8 +114,8 @@ export function Controls({
           input.value = '';
         }
       }}>
-        <input name="topic" placeholder="Konu gir..." disabled={!isConnected || sessionState === 'processing' || sessionState === 'speaking'} />
-        <button type="submit" disabled={!isConnected || sessionState === 'processing' || sessionState === 'speaking'}>Ders Oluştur</button>
+        <input name="topic" placeholder="Konu gir..." disabled={!isConnected || busy} />
+        <button type="submit" disabled={!isConnected || busy}>Ders Oluştur</button>
       </form>
 
       <button

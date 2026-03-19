@@ -15,6 +15,31 @@ function toRad(deg: number) {
   return (deg * Math.PI) / 180;
 }
 
+/**
+ * Convert Catmull-Rom spline points to SVG cubic bezier path.
+ * Uses standard alpha=0.5 (centripetal) parametrization.
+ */
+function catmullRomToPath(points: [number, number][]): string {
+  if (points.length < 2) return "";
+  if (points.length === 2) return `M ${points[0][0]} ${points[0][1]} L ${points[1][0]} ${points[1][1]}`;
+
+  // Duplicate first and last points so every segment has 4 control points
+  const pts = [points[0], ...points, points[points.length - 1]];
+  let d = `M ${points[0][0]} ${points[0][1]}`;
+
+  for (let i = 0; i < pts.length - 3; i++) {
+    const p0 = pts[i], p1 = pts[i + 1], p2 = pts[i + 2], p3 = pts[i + 3];
+    // Convert Catmull-Rom to cubic bezier control points
+    const cp1x = p1[0] + (p2[0] - p0[0]) / 6;
+    const cp1y = p1[1] + (p2[1] - p0[1]) / 6;
+    const cp2x = p2[0] - (p3[0] - p1[0]) / 6;
+    const cp2y = p2[1] - (p3[1] - p1[1]) / 6;
+    d += ` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p2[0]} ${p2[1]}`;
+  }
+
+  return d;
+}
+
 function arcPath(cx: number, cy: number, r: number, startDeg: number, endDeg: number, yFlipped: boolean): string {
   const startRad = toRad(startDeg);
   const endRad = toRad(endDeg);
@@ -155,6 +180,7 @@ function renderShape(shape: Shape, idx: number, yFlipped: boolean, scaleFactor: 
           className="drawing-shape" />
       );
     case "polygon": {
+      if (!Array.isArray(shape.points)) return null;
       const pts = shape.points.map((p: any) =>
         Array.isArray(p) ? `${p[0]},${p[1]}` : `${p.x},${p.y}`
       ).join(" ");
@@ -163,6 +189,27 @@ function renderShape(shape: Shape, idx: number, yFlipped: boolean, scaleFactor: 
           stroke={shape.stroke ?? "#e8e8d8"} fill={shape.fill ?? "none"}
           strokeWidth={shape.strokeWidth ?? defStroke}
           className="drawing-shape" />
+      );
+    }
+    case "polyline": {
+      if (!Array.isArray(shape.points)) return null;
+      const normalizedPts: [number, number][] = shape.points.map((p: any) =>
+        Array.isArray(p) ? [p[0], p[1]] : [p.x, p.y]
+      );
+      const stroke = shape.stroke ?? "#e8e8d8";
+      const sw = shape.strokeWidth ?? defStroke;
+      if (shape.smooth && normalizedPts.length >= 3) {
+        return (
+          <path key={key} d={catmullRomToPath(normalizedPts)}
+            stroke={stroke} strokeWidth={sw} fill="none"
+            className="drawing-line" />
+        );
+      }
+      const ptsStr = normalizedPts.map(p => `${p[0]},${p[1]}`).join(" ");
+      return (
+        <polyline key={key} points={ptsStr}
+          stroke={stroke} strokeWidth={sw} fill="none"
+          className="drawing-line" />
       );
     }
     default:

@@ -15,6 +15,25 @@ function buildMockLesson(topic: string): LessonBoardItem[] {
       speech: `${topic} bir kelimeyi ya da fikri anlatmak için kullanılır.`,
     },
     {
+      type: "drawing",
+      coordSystem: { xMin: -2, xMax: 2, yMin: -2, yMax: 2, showAxes: true, showGrid: true, gridStep: 1 },
+      steps: [
+        {
+          shapes: [
+            { type: "circle", cx: 0, cy: 0, r: 1, stroke: "#60a5fa" },
+          ],
+          speech: "Önce bir birim çember çizelim.",
+        },
+        {
+          shapes: [
+            { type: "line", x1: 0, y1: 0, x2: 0.866, y2: 0.5, stroke: "#f87171" },
+            { type: "point", cx: 0.866, cy: 0.5, fill: "#fbbf24", label: "P" },
+          ],
+          speech: "Şimdi merkezdeki noktadan çembere bir yarıçap çizelim.",
+        },
+      ],
+    } as any,
+    {
       type: "list",
       items: [`${topic} örneği 1`, `${topic} örneği 2`, `${topic} örneği 3`],
       speech: `Şimdi ${topic} ile ilgili birkaç örnek görelim.`,
@@ -36,12 +55,15 @@ function buildMockAnnotationAnswer(item: BoardItem, question: string): string {
     const entry = item.items[0] ?? "bu örnek";
     return `${entry} örneği, ${question.toLowerCase()} için basit bir açıklamadır.`;
   }
+  if (item.type === "drawing") {
+    return `Bu çizim, ${question.toLowerCase()} için görsel bir açıklamadır.`;
+  }
   return `${item.text} ifadesi, ${question.toLowerCase()} için basit bir açıklamadır.`;
 }
 
 export function createMockLLMService(): LLMService {
   return {
-    async generateLesson(topic: string): Promise<LessonBoardItem[]> {
+    async generateLesson(topic: string, _gradeLevel?: number, _length?: string, _questionOpts?: any): Promise<LessonBoardItem[]> {
       console.log(`[llm:mock] generating lesson for: ${topic}`);
       return buildMockLesson(topic);
     },

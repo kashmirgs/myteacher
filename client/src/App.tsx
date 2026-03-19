@@ -10,12 +10,14 @@ import { Controls } from "./components/Controls";
 export function App() {
   const [boardItems, setBoardItems] = useState<BoardItem[]>([]);
   const [revealedCount, setRevealedCount] = useState(0);
+  const [drawingSteps, setDrawingSteps] = useState<Record<number, number>>({});
   const [sessionState, setSessionState] = useState<SessionState>("idle");
   const [transcript, setTranscript] = useState("");
   const [aiResponse, setAiResponse] = useState("");
 
   // Ref to avoid stale closures in VAD callbacks and the message handler
   const sessionStateRef = useRef<SessionState>(sessionState);
+  const boardItemsRef = useRef<BoardItem[]>(boardItems);
   // Ref for synchronous VAD reset from ws.onmessage (avoids React 18 batching)
   const vadResetRef = useRef<() => void>(() => {});
   const lastBargeInAtRef = useRef(0);
@@ -75,10 +77,21 @@ export function App() {
     switch (msg.type) {
       case "board_update":
         setBoardItems(msg.items);
+        boardItemsRef.current = msg.items;
         setRevealedCount(0);
+        setDrawingSteps({});
         break;
-      case "board_reveal":
+      case "board_reveal": {
         setRevealedCount(msg.index + 1);
+        // If the revealed item is a drawing, auto-activate step 0
+        const revealedItem = boardItemsRef.current[msg.index];
+        if (revealedItem?.type === "drawing") {
+          setDrawingSteps(prev => ({ ...prev, [msg.index]: 1 }));
+        }
+        break;
+      }
+      case "drawing_step":
+        setDrawingSteps(prev => ({ ...prev, [msg.itemIndex]: msg.stepIndex + 1 }));
         break;
       case "state_change":
         setSessionState(msg.state);
@@ -205,6 +218,14 @@ export function App() {
     [send, audioPlayer],
   );
 
+  const handleStartPresetLesson = useCallback(
+    (topicId: string) => {
+      void audioPlayer.warmUp();
+      send({ type: "start_preset_lesson", topicId });
+    },
+    [send, audioPlayer],
+  );
+
   const handleAnnotationClick = useCallback(
     (index: number) => {
       send({
@@ -222,7 +243,7 @@ export function App() {
         <h1>MyTeacher</h1>
       </header>
       <main className="app-main">
-        <Whiteboard items={boardItems} revealedCount={revealedCount} onAnnotationClick={handleAnnotationClick} />
+        <Whiteboard items={boardItems} revealedCount={revealedCount} drawingSteps={drawingSteps} onAnnotationClick={handleAnnotationClick} />
       </main>
       <aside className="app-sidebar">
         <Controls
@@ -231,6 +252,7 @@ export function App() {
           isOpen={isOpen}
           onMicToggle={handleMicToggle}
           onGenerateLesson={handleGenerateLesson}
+          onStartPresetLesson={handleStartPresetLesson}
           transcript={transcript}
           aiResponse={aiResponse}
         />

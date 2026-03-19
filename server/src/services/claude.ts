@@ -19,8 +19,13 @@ export interface LLMStreamHandle {
   abort(): void;
 }
 
+export interface QuestionOptions {
+  includeQuestions?: boolean;
+  examStyle?: boolean;
+}
+
 export interface LLMService {
-  generateLesson(topic: string, gradeLevel?: number, length?: LessonLength): Promise<LessonBoardItem[]>;
+  generateLesson(topic: string, gradeLevel?: number, length?: LessonLength, questionOpts?: QuestionOptions): Promise<LessonBoardItem[]>;
   generateSpeechResponse(transcript: string): Promise<string>;
   streamSpeechResponse(
     transcript: string,
@@ -37,12 +42,12 @@ export interface LLMService {
 
 function createFallbackLLMService(primary: LLMService, fallback: LLMService): LLMService {
   return {
-    async generateLesson(topic: string, gradeLevel?: number, length?: LessonLength): Promise<LessonBoardItem[]> {
+    async generateLesson(topic: string, gradeLevel?: number, length?: LessonLength, questionOpts?: QuestionOptions): Promise<LessonBoardItem[]> {
       try {
-        return await primary.generateLesson(topic, gradeLevel, length);
+        return await primary.generateLesson(topic, gradeLevel, length, questionOpts);
       } catch (err) {
         console.warn("[llm] primary generateLesson failed, using fallback:", err);
-        return fallback.generateLesson(topic, gradeLevel, length);
+        return fallback.generateLesson(topic, gradeLevel, length, questionOpts);
       }
     },
 
@@ -135,13 +140,40 @@ function buildLessonSystemPrompt(gradeLevel?: number, length?: LessonLength): st
 // Default for WS lesson generation (no grade level info)
 export const LESSON_SYSTEM_PROMPT = buildLessonSystemPrompt(1);
 
-export function buildLessonPrompt(topic: string, gradeLevel?: number, length?: LessonLength): string {
+export function buildLessonPrompt(topic: string, gradeLevel?: number, length?: LessonLength, questionOpts?: QuestionOptions): string {
   const level = gradeLevel ?? 1;
   const cfg = LESSON_LENGTH_CONFIG[length ?? "short"];
   let schoolType: string;
   if (level <= 4) schoolType = "ilkokul";
   else if (level <= 8) schoolType = "ortaokul";
   else schoolType = "lise";
+
+  let questionPrompt = "";
+  if (questionOpts?.includeQuestions) {
+    questionPrompt = `
+- question tipi: Konuyu anlattıktan sonra araya soru ekle. 4 şık (A-D), tek doğru cevap.
+  Format: { "type": "question", "text": "Soru?", "options": ["A şıkkı", "B şıkkı", "C şıkkı", "D şıkkı"], "correct": 0, "explanation": "Açıklama.", "speech": "Şimdi bir soru sorayım..." }
+  correct: 0-tabanlı indeks (0=A, 1=B, 2=C, 3=D).
+  Toplam elemanların ~%25-30'u question olsun. Her soru, o konuyu anlatan bölümden sonra gelsin.
+  speech'te soruyu oku, ardından adım adım çözerek doğru cevabı açıkla. Öğrenci çözümü dinleyerek öğrensin. Örnek: "Şimdi bir soru çözelim. 3 ile 5'i toplarsak kaç eder? Hadi birlikte düşünelim. 3'ün üzerine 5 eklersek... 3, 4, 5, 6, 7, 8. Evet, cevap 8, yani C şıkkı doğru!"`;
+
+    if (questionOpts.examStyle) {
+      if (level >= 5 && level <= 8) {
+        questionPrompt += `\n  Sorular LGS (Liseye Geçiş Sınavı) formatında olsun: paragraf yorumlama, çok adımlı problem çözme, analiz ve değerlendirme gerektiren sorular. Gerçek LGS sınavlarındaki soru tarzını ve zorluğunu yakala.`;
+      } else if (level >= 9) {
+        questionPrompt += `\n  Sorular YKS/AYT formatında olsun: kavramsal derinlik, analitik düşünme, çeldirici şıklar. Üniversite giriş sınavı tarzı ve zorluğunda sorular üret.`;
+      }
+    }
+  }
+
+  const questionExample = questionOpts?.includeQuestions
+    ? `,
+  { "type": "question", "text": "3 + 5 kaç eder?", "options": ["6", "7", "8", "9"], "correct": 2, "explanation": "3 ile 5'i toplarsak 8 eder.", "speech": "Şimdi bir soru çözelim. 3 ile 5'i toplarsak kaç eder? Hadi düşünelim. 3'ün üzerine 5 eklersek 8 eder. Doğru cevap C şıkkı!" }`
+    : "";
+
+  const validTypes = questionOpts?.includeQuestions
+    ? "title, text, formula, list, highlight, drawing, question"
+    : "title, text, formula, list, highlight, drawing";
 
   return `Konu: ${topic}
 Seviye: ${level}. sınıf (${schoolType})
@@ -167,31 +199,39 @@ Aşağıdaki JSON formatında bir ders tahtası oluştur. ${cfg.items} eleman ü
         { "type": "text", "x": 220, "y": 180, "text": "Armut", "fontSize": 14, "fill": "#e8e8d8", "anchor": "middle" }
       ], "speech": "İçine elma ve armut koyalım. İşte bu bir küme!" }
     ]
-  }
+  }${questionExample}
 ]
 
 Kurallar:
 - Sadece JSON dizisi döndür, başka hiçbir şey yazma.
-- Geçerli tipler: title, text, formula, list, highlight, drawing
+- Geçerli tipler: ${validTypes}${questionPrompt}
 - drawing: Görsel açıklama gerektiren konularda kullan (kümeler, diyagramlar, şekiller, grafikler).
   İki mod var:
-  A) Diyagram modu (coordSystem YOK): Kümeler, Venn şemaları, akış diyagramları, basit şekiller için.
+  A) Diyagram modu (coordSystem YOK): Kümeler, Venn şemaları, akış diyagramları, geometrik şekiller (üçgen, dörtgen, çember) için.
      Koordinatlar piksel: x: 0-400, y: 0-300 (y aşağı doğru artar). Şekilleri bu alanda konumla.
   B) Koordinat modu (coordSystem VAR): SADECE gerçek matematik grafikleri için (fonksiyon grafikleri, koordinat geometrisi, sayı doğrusu).
-     coordSystem: { xMin, xMax, yMin, yMax, showAxes?, showGrid?, gridStep? }. y yukarı doğru artar.
+     coordSystem steps'in yanında, drawing nesnesinin üst seviyesinde olmalı (step içinde DEĞİL!):
+     { "type": "drawing", "coordSystem": { xMin, xMax, yMin, yMax, showAxes?, showGrid?, gridStep? }, "steps": [...] }
+     y yukarı doğru artar.
      Şekil koordinatları xMin-xMax ve yMin-yMax aralığında olmalı (piksel değil, matematik birimi).
      strokeWidth: ~0.04, fontSize: ~0.5, point r: ~0.06 gibi küçük değerler kullan.
      Örnek: birim çember → { type:"circle", cx:0, cy:0, r:1, strokeWidth:0.04, stroke:"#60a5fa" }
   steps: Her adım shapes[] ve speech içerir. Drawing'de speech step seviyesindedir.
-  Şekil tipleri: line, circle, arc, rect, text, point, arrow, polygon, ellipse
+  Şekil tipleri: line, circle, arc, rect, text, point, arrow, polygon, ellipse, polyline
+  polygon: { type: "polygon", points: [[x1,y1], [x2,y2], [x3,y3]], fill?, stroke?, strokeWidth? }
+    points mutlaka dizi içinde [x,y] çiftleri olmalı. Örnek üçgen: points: [[200,50],[100,250],[300,250]]
+  polyline: { type: "polyline", points: [[x1,y1], [x2,y2], ...], stroke?, strokeWidth?, smooth?: true }
+    smooth: true ile noktalar arası yumuşak eğri çizilir (sinüs, dalga, parabolik eğri gibi). Yeterli nokta kullan (10-20 arası).
   text shape: { type: "text", x, y, text, fontSize?, fill?, anchor?: "start"|"middle"|"end" }
   Açılar derece (0=sağ, saat yönünün tersi).
   Renkler: #f87171 (kırmızı), #60a5fa (mavi), #4ade80 (yeşil), #fbbf24 (sarı), #c084fc (mor)
   ÖNEMLİ: Küme, Venn diyagramı gibi kavramsal çizimlerde coordSystem KULLANMA, diyagram modunu kullan.
+  ÖNEMLİ: Geometrik şekiller (üçgen, dörtgen, açılar) diyagram modunu kullan, coordSystem KULLANMA. Üçgen çizmek için polygon kullan: { type: "polygon", points: [[200,50],[100,250],[300,250]], stroke: "#60a5fa", strokeWidth: 2 }
   Yerleşim: Etiket/başlık text'leri şeklin dışında olmalı, üst üste binmemeli. Başlık text'ini şeklin üst kenarından en az 20 piksel yukarıya koy. Elemanları şeklin merkezine yakın yerleştir, kenarlara yapışmasın.
 - ${level}. sınıf (${schoolType}) seviyesinde, Türkçe açıkla.
 - Sayıları rakamla yaz (5, 10 gibi).
-- Formüllerde çok satır varsa • ile ayır.
+- Formüllerde çok satır varsa her formülü yeni satıra yaz (JSON'da \\n kullan). • karakterini satır ayracı olarak KULLANMA.
+- Formüllerde LaTeX sözdizimi KULLANMA (\\le, \\frac, \\sin, \\cos gibi). Düz metin ve Unicode semboller kullan. Örnekler: ≤, ≥, ≠, ×, ÷, √, π, ², ³, ½. Yanlış: "-1 \\le \\sin(x) \\le 1". Doğru: "-1 ≤ sin(x) ≤ 1".
 - speech: o item gösterilirken sesli söylenecek metin (${cfg.speechLen}, doğal konuşma dili Türkçe). Her item'da speech olmalı (drawing hariç, drawing'de step'lerde).
 - speech'te formül değişkenlerini Türkçe harf adıyla yaz, tek harf bırakma. Örnekler: r → "re", l → "le", h → "he", b → "be", d → "de", n → "ne", x → "iks". π → "pi". Yanlış: "pi r l". Doğru: "pi re le".
 - Ders kendi içinde tam olsun. "Şimdi örnek çözeceğiz", "bir sonraki derste göreceğiz" gibi derste olmayan içeriklere atıf yapma. Son item dersi özetleyen veya öğrenileni pekiştiren bir kapanış olsun.`;
@@ -212,6 +252,7 @@ export function buildAnnotationContext(boardItems: BoardItem[], clickedIndex: nu
       const marker = i === clickedIndex ? " ← İŞARETLENDİ" : "";
       if (item.type === "list") return `[${i}] (${item.type}) ${item.items.join(", ")}${marker}`;
       if (item.type === "drawing") return `[${i}] (drawing) [çizim: ${item.steps.length} adım]${marker}`;
+      if (item.type === "question") return `[${i}] (question) ${item.text}${marker}`;
       return `[${i}] (${item.type}) ${item.text}${marker}`;
     })
     .join("\n");
@@ -221,10 +262,10 @@ function createClaudeLLMService(): LLMService {
   const client = new Anthropic();
 
   return {
-    async generateLesson(topic: string, gradeLevel?: number, length?: LessonLength): Promise<LessonBoardItem[]> {
+    async generateLesson(topic: string, gradeLevel?: number, length?: LessonLength, questionOpts?: QuestionOptions): Promise<LessonBoardItem[]> {
       console.log(`[llm:claude] generating lesson for: ${topic} (grade ${gradeLevel ?? "default"}, length ${length ?? "default"})`);
 
-      const prompt = buildLessonPrompt(topic, gradeLevel, length);
+      const prompt = buildLessonPrompt(topic, gradeLevel, length, questionOpts);
       const systemPrompt = buildLessonSystemPrompt(gradeLevel, length);
 
       for (let attempt = 0; attempt < 2; attempt++) {

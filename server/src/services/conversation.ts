@@ -37,6 +37,7 @@ export class ConversationHistory {
     const summary = boardItems
       .map((item) => {
         if (item.type === 'list') return `${item.type}: ${item.items.join(', ')}`;
+        if (item.type === 'drawing') return `drawing: [${item.steps.length} adım]`;
         return `${item.type}: ${item.text}`;
       })
       .join(' | ');
