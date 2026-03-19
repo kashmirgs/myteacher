@@ -10,27 +10,7 @@ export interface STTCallbacks {
 export interface STTService {
   start(callbacks: STTCallbacks): void;
   feedAudio(chunk: Buffer): void;
-  /** Capture WebM init segment from audio chunk without feeding to Deepgram */
-  saveHeader(chunk: Buffer): void;
   stop(): void;
-}
-
-/**
- * Extract the WebM initialization segment (EBML + Segment + Tracks) from a
- * MediaRecorder first-chunk, stripping any audio Cluster data.  The Cluster
- * element ID in EBML is the 4-byte sequence 0x1F 0x43 0xB6 0x75.  Everything
- * before the first Cluster is pure format metadata that Deepgram needs to
- * decode subsequent mid-stream clusters.
- */
-function extractInitSegment(data: ArrayBuffer): ArrayBuffer {
-  const view = new Uint8Array(data);
-  for (let i = 0; i < view.length - 3; i++) {
-    if (view[i] === 0x1f && view[i + 1] === 0x43 && view[i + 2] === 0xb6 && view[i + 3] === 0x75) {
-      return data.slice(0, i);
-    }
-  }
-  // No Cluster found — return as-is (shouldn't happen for valid WebM)
-  return data;
 }
 
 export function createSTTService(): STTService {
@@ -40,10 +20,6 @@ export function createSTTService(): STTService {
   let transcriptBuffer = '';
   let isReady = false;
   let pendingChunks: ArrayBuffer[] = [];
-
-  // WebM initialization segment (EBML header + Tracks) — no audio data.
-  // Persists across STT cycles so new Deepgram connections can decode mid-stream data.
-  let webmHeader: ArrayBuffer | null = null;
 
   /** Tear down current connection without logging (used internally by start) */
   function teardown() {
@@ -59,7 +35,6 @@ export function createSTTService(): STTService {
     transcriptBuffer = '';
     isReady = false;
     pendingChunks = [];
-    // NOTE: webmHeader is intentionally NOT cleared — it persists across cycles
   }
 
   return {
@@ -73,6 +48,9 @@ export function createSTTService(): STTService {
       connection = deepgram.listen.live({
         model: 'nova-3',
         language: 'tr',
+        encoding: 'linear16',
+        sample_rate: 16000,
+        channels: 1,
         interim_results: true,
         endpointing: 300,
         utterance_end_ms: 1000,
@@ -87,11 +65,6 @@ export function createSTTService(): STTService {
         if (connection !== conn) return; // stale
         console.log('[stt] deepgram connection opened');
         isReady = true;
-
-        // Replay WebM header so Deepgram can decode mid-stream clusters
-        if (webmHeader) {
-          conn.send(webmHeader);
-        }
 
         // Flush audio that arrived before connection was ready
         for (const chunk of pendingChunks) {
@@ -152,28 +125,9 @@ export function createSTTService(): STTService {
       }, 5000);
     },
 
-    saveHeader(chunk: Buffer) {
-      if (webmHeader) return;
-      const ab = new Uint8Array(chunk).buffer as ArrayBuffer;
-      const candidate = extractInitSegment(ab);
-      if (candidate.byteLength > 0) {
-        webmHeader = candidate;
-        console.log('[stt] webm init segment saved (%d bytes, stripped from %d)', webmHeader.byteLength, ab.byteLength);
-      }
-    },
-
     feedAudio(chunk: Buffer) {
       if (!connection) return;
       const ab = new Uint8Array(chunk).buffer as ArrayBuffer;
-
-      // Save the init segment (EBML + Tracks, no audio) from the first chunk
-      if (!webmHeader) {
-        const candidate = extractInitSegment(ab);
-        if (candidate.byteLength > 0) {
-          webmHeader = candidate;
-          console.log('[stt] webm init segment saved (%d bytes, stripped from %d)', webmHeader.byteLength, ab.byteLength);
-        }
-      }
 
       if (isReady) {
         connection.send(ab);

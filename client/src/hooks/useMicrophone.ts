@@ -7,7 +7,9 @@ type SendBinaryFn = (data: Blob | ArrayBuffer) => void;
 export function useMicrophone(send: SendFn, sendBinary: SendBinaryFn) {
   const [isOpen, setIsOpen] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const workletNodeRef = useRef<AudioWorkletNode | null>(null);
+  const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const onStreamReadyRef = useRef<((stream: MediaStream) => void) | null>(null);
   const suppressUntilRef = useRef(0);
@@ -21,7 +23,7 @@ export function useMicrophone(send: SendFn, sendBinary: SendBinaryFn) {
     }
   }, []);
 
-  /** Open mic + start MediaRecorder (called once, stays open across cycles) */
+  /** Open mic + start AudioWorklet PCM pipeline (called once, stays open across cycles) */
   const start = useCallback(async () => {
     try {
       // Only acquire stream once
@@ -36,18 +38,34 @@ export function useMicrophone(send: SendFn, sendBinary: SendBinaryFn) {
         streamRef.current = stream;
         setIsOpen(true);
 
-        // Start MediaRecorder once — it stays running across cycles
-        const recorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
-        mediaRecorderRef.current = recorder;
+        // Create AudioContext at default sample rate (avoid starving VAD's AudioContext)
+        // Downsampling to 16kHz happens inside the worklet processor
+        const audioContext = new AudioContext();
+        audioContextRef.current = audioContext;
 
-        recorder.ondataavailable = (event) => {
+        // Load the PCM worklet processor
+        await audioContext.audioWorklet.addModule("/pcm-processor.js");
+
+        const source = audioContext.createMediaStreamSource(stream);
+        sourceRef.current = source;
+
+        const workletNode = new AudioWorkletNode(audioContext, "pcm-processor", {
+          processorOptions: { targetSampleRate: 16000 },
+        });
+        workletNodeRef.current = workletNode;
+
+        workletNode.port.onmessage = (e: MessageEvent) => {
           if (performance.now() < suppressUntilRef.current) return;
-          if (event.data.size > 0) {
-            sendBinary(event.data);
-          }
+          sendBinary(e.data as ArrayBuffer);
         };
 
-        recorder.start(250); // Send chunks every 250ms
+        source.connect(workletNode);
+        // Connect through a silent GainNode to keep the audio graph active
+        // (Chrome won't call process() unless the node reaches destination)
+        const silentGain = audioContext.createGain();
+        silentGain.gain.value = 0;
+        workletNode.connect(silentGain);
+        silentGain.connect(audioContext.destination);
 
         // Notify VAD about the stream
         if (onStreamReadyRef.current) {
@@ -62,7 +80,7 @@ export function useMicrophone(send: SendFn, sendBinary: SendBinaryFn) {
     }
   }, [send, sendBinary]);
 
-  /** Stop listening (signal server) but keep mic + MediaRecorder alive */
+  /** Stop listening (signal server) but keep mic + AudioWorklet alive */
   const stop = useCallback(() => {
     setIsRecording(false);
     console.log("[mic] stop_listening (reason=user_stop)");
@@ -74,12 +92,22 @@ export function useMicrophone(send: SendFn, sendBinary: SendBinaryFn) {
     suppressUntilRef.current = performance.now() + durationMs;
   }, []);
 
-  /** Full teardown: release mic, stop MediaRecorder, stop stream tracks */
+  /** Full teardown: release mic, stop AudioWorklet, stop stream tracks */
   const close = useCallback(() => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-      mediaRecorderRef.current.stop();
+    if (workletNodeRef.current) {
+      workletNodeRef.current.disconnect();
+      workletNodeRef.current = null;
     }
-    mediaRecorderRef.current = null;
+
+    if (sourceRef.current) {
+      sourceRef.current.disconnect();
+      sourceRef.current = null;
+    }
+
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+      audioContextRef.current = null;
+    }
 
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop());
@@ -88,7 +116,7 @@ export function useMicrophone(send: SendFn, sendBinary: SendBinaryFn) {
 
     setIsRecording(false);
     setIsOpen(false);
-  }, [send]);
+  }, []);
 
   return { isOpen, isRecording, start, stop, close, setOnStreamReady, suppressAudio };
 }

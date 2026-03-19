@@ -729,7 +729,6 @@ export function handleConnection(ws: WebSocket): void {
     // Binary frame = audio data from microphone
     if (isBinary) {
       const buffer = Buffer.isBuffer(raw) ? raw : Buffer.from(raw as ArrayBuffer);
-      stt.saveHeader(buffer); // Always capture WebM header regardless of state
       const state = session.getState();
       if (state === "listening") {
         stt.feedAudio(buffer);
