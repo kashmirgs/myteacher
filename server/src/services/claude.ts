@@ -152,10 +152,14 @@ export function buildLessonPrompt(topic: string, gradeLevel?: number, length?: L
   if (questionOpts?.includeQuestions) {
     questionPrompt = `
 - question tipi: Konuyu anlattıktan sonra araya soru ekle. 4 şık (A-D), tek doğru cevap.
-  Format: { "type": "question", "text": "Soru?", "options": ["A şıkkı", "B şıkkı", "C şıkkı", "D şıkkı"], "correct": 0, "explanation": "Açıklama.", "speech": "Şimdi bir soru sorayım..." }
+  Format: { "type": "question", "text": "Soru?", "options": ["A şıkkı", "B şıkkı", "C şıkkı", "D şıkkı"], "correct": 0, "explanation": "Kısa açıklama.", "speech": "Şimdi bir soru sorayım. [soruyu oku]. Hadi birlikte çözelim." }
   correct: 0-tabanlı indeks (0=A, 1=B, 2=C, 3=D).
-  Toplam elemanların ~%25-30'u question olsun. Her soru, o konuyu anlatan bölümden sonra gelsin.
-  speech'te soruyu oku, ardından adım adım çözerek doğru cevabı açıkla. Öğrenci çözümü dinleyerek öğrensin. Örnek: "Şimdi bir soru çözelim. 3 ile 5'i toplarsak kaç eder? Hadi birlikte düşünelim. 3'ün üzerine 5 eklersek... 3, 4, 5, 6, 7, 8. Evet, cevap 8, yani C şıkkı doğru!"`;
+  Toplam elemanların ~%20-25'i question olsun. Her soru, o konuyu anlatan bölümden sonra gelsin.
+  ÖNEMLİ — Görsel çözüm: Her question'dan hemen sonra bir drawing item koy ve çözümü tahtada adım adım göster.
+  Question speech'i sadece soruyu okusun ve "Hadi birlikte çözelim" gibi bir geçiş cümlesi söylesin.
+  Çözüm drawing'inin her step'inde çözümün bir adımını shapes ile tahtaya çiz ve speech ile açıkla.
+  Son step'te doğru cevabı vurgula (örn: yeşil renkle doğru şıkkı yaz).
+  Örnek sıralama: question → drawing (çözüm adımları) → sonraki konu...`;
 
     if (questionOpts.examStyle) {
       if (level >= 5 && level <= 8) {
@@ -168,7 +172,30 @@ export function buildLessonPrompt(topic: string, gradeLevel?: number, length?: L
 
   const questionExample = questionOpts?.includeQuestions
     ? `,
-  { "type": "question", "text": "3 + 5 kaç eder?", "options": ["6", "7", "8", "9"], "correct": 2, "explanation": "3 ile 5'i toplarsak 8 eder.", "speech": "Şimdi bir soru çözelim. 3 ile 5'i toplarsak kaç eder? Hadi düşünelim. 3'ün üzerine 5 eklersek 8 eder. Doğru cevap C şıkkı!" }`
+  { "type": "question", "text": "3 + 5 kaç eder?", "options": ["6", "7", "8", "9"], "correct": 2, "explanation": "3 ile 5'i toplarsak 8 eder.", "speech": "Şimdi bir soru çözelim. 3 ile 5'i toplarsak kaç eder? Hadi birlikte çözelim." },
+  {
+    "type": "drawing",
+    "steps": [
+      { "shapes": [
+        { "type": "text", "x": 200, "y": 40, "text": "3 + 5 = ?", "fontSize": 22, "fill": "#fbbf24", "anchor": "middle" },
+        { "type": "circle", "cx": 80, "cy": 140, "r": 12, "fill": "#60a5fa", "stroke": "#60a5fa", "strokeWidth": 1 },
+        { "type": "circle", "cx": 120, "cy": 140, "r": 12, "fill": "#60a5fa", "stroke": "#60a5fa", "strokeWidth": 1 },
+        { "type": "circle", "cx": 160, "cy": 140, "r": 12, "fill": "#60a5fa", "stroke": "#60a5fa", "strokeWidth": 1 },
+        { "type": "text", "x": 120, "y": 190, "text": "3", "fontSize": 18, "fill": "#60a5fa", "anchor": "middle" }
+      ], "speech": "Önce 3 tane yuvarlak çizelim. İşte burada 3 tane." },
+      { "shapes": [
+        { "type": "circle", "cx": 220, "cy": 140, "r": 12, "fill": "#4ade80", "stroke": "#4ade80", "strokeWidth": 1 },
+        { "type": "circle", "cx": 260, "cy": 140, "r": 12, "fill": "#4ade80", "stroke": "#4ade80", "strokeWidth": 1 },
+        { "type": "circle", "cx": 300, "cy": 140, "r": 12, "fill": "#4ade80", "stroke": "#4ade80", "strokeWidth": 1 },
+        { "type": "circle", "cx": 220, "cy": 180, "r": 12, "fill": "#4ade80", "stroke": "#4ade80", "strokeWidth": 1 },
+        { "type": "circle", "cx": 260, "cy": 180, "r": 12, "fill": "#4ade80", "stroke": "#4ade80", "strokeWidth": 1 },
+        { "type": "text", "x": 260, "y": 220, "text": "5", "fontSize": 18, "fill": "#4ade80", "anchor": "middle" }
+      ], "speech": "Şimdi yanına 5 tane daha ekleyelim. 1, 2, 3, 4, 5. Hepsini sayalım." },
+      { "shapes": [
+        { "type": "text", "x": 200, "y": 270, "text": "3 + 5 = 8  ✓ Cevap: C", "fontSize": 20, "fill": "#4ade80", "anchor": "middle" }
+      ], "speech": "Hepsini sayarsak 1, 2, 3, 4, 5, 6, 7, 8. Evet 8 eder! Doğru cevap C şıkkı." }
+    ]
+  }`
     : "";
 
   const validTypes = questionOpts?.includeQuestions
