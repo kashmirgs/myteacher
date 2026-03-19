@@ -155,6 +155,7 @@ export function buildLessonPrompt(topic: string, gradeLevel?: number, length?: L
   Format: { "type": "question", "text": "Soru?", "options": ["A şıkkı", "B şıkkı", "C şıkkı", "D şıkkı"], "correct": 0, "explanation": "Kısa açıklama.", "speech": "Şimdi bir soru sorayım. [soruyu oku]. Hadi birlikte çözelim." }
   correct: 0-tabanlı indeks (0=A, 1=B, 2=C, 3=D).
   Toplam elemanların ~%20-25'i question olsun. Her soru, o konuyu anlatan bölümden sonra gelsin.
+  ÖNEMLİ — Kapsam: Soru, dersin ilerleyen bölümlerinde anlatılacak kavramları içermesin. Ancak öğrencinin önceden bilmesi gereken farklı konulardaki ön bilgiler soruda kullanılabilir. Örneğin trigonometri dersinde henüz sadece sin ve cos anlatıldıysa, dersin devamında anlatılacak tan'ı sorma; ama daha önce öğrenilmiş temel aritmetik veya geometri bilgisi soruda yer alabilir.
   ÖNEMLİ — Görsel çözüm: Her question'dan hemen sonra bir drawing item koy ve çözümü tahtada adım adım göster.
   Question speech'i sadece soruyu okusun ve "Hadi birlikte çözelim" gibi bir geçiş cümlesi söylesin.
   Çözüm drawing'inin her step'inde çözümün bir adımını shapes ile tahtaya çiz ve speech ile açıkla.
