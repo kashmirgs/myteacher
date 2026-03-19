@@ -196,14 +196,17 @@ export function App() {
         console.log("[mic] close ignored (recent barge_in)");
         return;
       }
-      // Full shutdown: VAD + mic
+      // Shutdown mic + VAD only — do NOT stop audioPlayer so TTS/lesson continues
       vadDetach();
       close();
-      audioPlayer.stop();
     } else {
       // Warm up AudioContext during this user gesture so the browser's
       // autoplay policy allows playback later when TTS chunks arrive.
-      if (!audioPlayer.isTTSPlaying()) {
+      if (audioPlayer.isTTSPlaying()) {
+        // Reset grace period so VAD doesn't immediately trigger a false
+        // barge-in from TTS audio bleed through the mic.
+        speakingEnteredAtRef.current = performance.now();
+      } else {
         void audioPlayer.warmUp();
       }
       start();
