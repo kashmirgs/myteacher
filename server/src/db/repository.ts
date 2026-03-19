@@ -1,37 +1,40 @@
 import { eq } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
-import { db } from "./index.js";
-import { lessonTopics, type LessonTopic, type NewLessonTopic } from "./schema.js";
+import { db, schema } from "./index.js";
+import type { LessonTopic, NewLessonTopic } from "./schema.js";
 
-export function listActiveTopics(): LessonTopic[] {
-  return db.select().from(lessonTopics).where(eq(lessonTopics.isActive, true)).all();
+const { lessonTopics } = schema;
+
+export async function listActiveTopics(): Promise<LessonTopic[]> {
+  return db.select().from(lessonTopics).where(eq(lessonTopics.isActive, true));
 }
 
-export function listAllTopics(): LessonTopic[] {
-  return db.select().from(lessonTopics).all();
+export async function listAllTopics(): Promise<LessonTopic[]> {
+  return db.select().from(lessonTopics);
 }
 
-export function getTopicById(id: string): LessonTopic | undefined {
-  return db.select().from(lessonTopics).where(eq(lessonTopics.id, id)).get();
+export async function getTopicById(id: string): Promise<LessonTopic | undefined> {
+  const rows = await db.select().from(lessonTopics).where(eq(lessonTopics.id, id));
+  return rows[0];
 }
 
-export function createTopic(data: Omit<NewLessonTopic, "id" | "createdAt" | "updatedAt">): LessonTopic {
+export async function createTopic(data: Omit<NewLessonTopic, "id" | "createdAt" | "updatedAt">): Promise<LessonTopic> {
   const id = uuidv4();
   const now = new Date().toISOString();
-  db.insert(lessonTopics).values({ ...data, id, createdAt: now, updatedAt: now }).run();
-  return getTopicById(id)!;
+  await db.insert(lessonTopics).values({ ...data, id, createdAt: now, updatedAt: now });
+  return (await getTopicById(id))!;
 }
 
-export function updateTopic(
+export async function updateTopic(
   id: string,
   data: Partial<Pick<NewLessonTopic, "title" | "description" | "gradeLevel" | "subject" | "boardItems" | "isActive">>,
-): LessonTopic | undefined {
+): Promise<LessonTopic | undefined> {
   const now = new Date().toISOString();
-  db.update(lessonTopics).set({ ...data, updatedAt: now }).where(eq(lessonTopics.id, id)).run();
-  return getTopicById(id);
+  await db.update(lessonTopics).set({ ...data, updatedAt: now }).where(eq(lessonTopics.id, id));
+  return await getTopicById(id);
 }
 
-export function deleteTopic(id: string): boolean {
-  const result = db.delete(lessonTopics).where(eq(lessonTopics.id, id)).run();
-  return result.changes > 0;
+export async function deleteTopic(id: string): Promise<boolean> {
+  const rows = await db.delete(lessonTopics).where(eq(lessonTopics.id, id)).returning();
+  return rows.length > 0;
 }

@@ -18,6 +18,7 @@
     "better-sqlite3": "^12.6.2",
     "dotenv": "^16.4.0",
     "drizzle-orm": "^0.45.1",
+    "postgres": "^3.4.8",
     "uuid": "^13.0.0",
     "ws": "^8.18.0"
   },

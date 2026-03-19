@@ -79,7 +79,7 @@ export async function handleTopicsAPI(
   // GET /api/topics — list topics
   if (method === "GET" && path === "/api/topics") {
     const all = url.searchParams.get("all") === "true";
-    const topics = all ? listAllTopics() : listActiveTopics();
+    const topics = all ? await listAllTopics() : await listActiveTopics();
     // Return summary (without full board_items) for listing
     const summary = topics.map(({ boardItems: _bi, ...rest }) => rest);
     json(res, summary);
@@ -89,7 +89,7 @@ export async function handleTopicsAPI(
   // GET /api/topics/:id
   const singleMatch = path.match(/^\/api\/topics\/([a-f0-9-]+)$/);
   if (method === "GET" && singleMatch) {
-    const topic = getTopicById(singleMatch[1]);
+    const topic = await getTopicById(singleMatch[1]);
     if (!topic) {
       json(res, { error: "not found" }, 404);
     } else {
@@ -107,7 +107,7 @@ export async function handleTopicsAPI(
         json(res, { error: "title, subject, gradeLevel, boardItems are required" }, 400);
         return true;
       }
-      const topic = createTopic({
+      const topic = await createTopic({
         title,
         description: description ?? null,
         gradeLevel,
@@ -130,7 +130,7 @@ export async function handleTopicsAPI(
       if (body.boardItems && typeof body.boardItems !== "string") {
         body.boardItems = JSON.stringify(body.boardItems);
       }
-      const topic = updateTopic(singleMatch[1], body);
+      const topic = await updateTopic(singleMatch[1], body);
       if (!topic) {
         json(res, { error: "not found" }, 404);
       } else {
@@ -145,7 +145,7 @@ export async function handleTopicsAPI(
 
   // DELETE /api/topics/:id
   if (method === "DELETE" && singleMatch) {
-    const ok = deleteTopic(singleMatch[1]);
+    const ok = await deleteTopic(singleMatch[1]);
     if (!ok) {
       json(res, { error: "not found" }, 404);
     } else {

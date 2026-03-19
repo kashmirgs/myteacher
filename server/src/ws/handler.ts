@@ -867,7 +867,7 @@ export function handleConnection(ws: WebSocket): void {
         console.log(`[handler] start_preset_lesson topicId="${msg.topicId}"`);
         if (!session.transition("processing")) break;
 
-        const topic = getTopicById(msg.topicId);
+        const topic = await getTopicById(msg.topicId);
         if (!topic) {
           send({ type: "error", message: "Konu bulunamadı" });
           session.transition("idle");

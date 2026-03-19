@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import type { ClientMessage, ServerMessage } from '@myteacher/shared';
 
-const WS_URL = `ws://${window.location.hostname}:3001`;
+const WS_URL = window.location.protocol === 'https:'
+  ? `wss://${window.location.host}/ws`
+  : `ws://${window.location.hostname}:3001`;
 const MAX_RECONNECT_DELAY = 8000;
 
 /**

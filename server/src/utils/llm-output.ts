@@ -84,12 +84,12 @@ export function validateBoard(items: BoardItem[]): ValidationResult {
               }
               if (shape.type === 'polygon' && Array.isArray(shape.points)) {
                 shape.points = shape.points.map((p: any) =>
-                  Array.isArray(p) ? p : [p.x, p.y]
+                  Array.isArray(p) ? p as [number, number] : [p.x, p.y] as [number, number]
                 );
               }
               if (shape.type === 'polyline' && Array.isArray(shape.points)) {
                 shape.points = shape.points.map((p: any) =>
-                  Array.isArray(p) ? p : [p.x, p.y]
+                  Array.isArray(p) ? p as [number, number] : [p.x, p.y] as [number, number]
                 );
                 if (shape.points.length < 2) {
                   errors.push(`polyline in step ${si} has fewer than 2 points`);

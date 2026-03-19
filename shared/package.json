@@ -6,7 +6,11 @@
   "main": "./src/protocol.ts",
   "types": "./src/protocol.ts",
   "exports": {
-    ".": "./src/protocol.ts"
+    ".": {
+      "import": "./dist/protocol.js",
+      "types": "./dist/protocol.d.ts",
+      "default": "./src/protocol.ts"
+    }
   },
   "scripts": {
     "build": "tsc"
