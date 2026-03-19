@@ -212,6 +212,35 @@ function renderShape(shape: Shape, idx: number, yFlipped: boolean, scaleFactor: 
           className="drawing-line" />
       );
     }
+    case "fraction": {
+      const fontSize = shape.fontSize ?? defFontSize;
+      const fill = shape.fill ?? "#e8e8d8";
+      const gap = fontSize * 0.15;
+      const lineLen = Math.max(shape.numerator.length, shape.denominator.length) * fontSize * 0.65 + fontSize * 0.4;
+      const lineHalf = lineLen / 2;
+      const sw = 1.5 * scaleFactor;
+      if (yFlipped) {
+        return (
+          <g key={key} transform={`translate(${shape.x}, ${shape.y}) scale(1, -1)`} className="drawing-shape">
+            <text x={0} y={-(gap + fontSize * 0.1)} fontSize={fontSize} fill={fill}
+              textAnchor="middle" dominantBaseline="auto">{shape.numerator}</text>
+            <line x1={-lineHalf} y1={0} x2={lineHalf} y2={0} stroke={fill} strokeWidth={sw} />
+            <text x={0} y={gap + fontSize * 0.85} fontSize={fontSize} fill={fill}
+              textAnchor="middle" dominantBaseline="auto">{shape.denominator}</text>
+          </g>
+        );
+      }
+      return (
+        <g key={key} className="drawing-shape">
+          <text x={shape.x} y={shape.y - gap - fontSize * 0.1} fontSize={fontSize} fill={fill}
+            textAnchor="middle" dominantBaseline="auto">{shape.numerator}</text>
+          <line x1={shape.x - lineHalf} y1={shape.y} x2={shape.x + lineHalf} y2={shape.y}
+            stroke={fill} strokeWidth={sw} />
+          <text x={shape.x} y={shape.y + gap + fontSize * 0.85} fontSize={fontSize} fill={fill}
+            textAnchor="middle" dominantBaseline="auto">{shape.denominator}</text>
+        </g>
+      );
+    }
     default:
       return null;
   }

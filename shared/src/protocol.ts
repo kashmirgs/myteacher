@@ -21,7 +21,10 @@ export type Shape =
   | { type: "ellipse"; cx: number; cy: number; rx: number; ry: number;
       fill?: string; stroke?: string; strokeWidth?: number }
   | { type: "polyline"; points: [number, number][];
-      stroke?: string; strokeWidth?: number; smooth?: boolean };
+      stroke?: string; strokeWidth?: number; smooth?: boolean }
+  | { type: "fraction"; x: number; y: number;
+      numerator: string; denominator: string;
+      fontSize?: number; fill?: string };
 
 export type CoordSystem = {
   xMin: number; xMax: number;

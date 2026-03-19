@@ -153,6 +153,7 @@ export function buildLessonPrompt(topic: string, gradeLevel?: number, length?: L
     questionPrompt = `
 - question tipi: Konuyu anlattıktan sonra araya soru ekle. 4 şık (A-D), tek doğru cevap.
   Format: { "type": "question", "text": "Soru?", "options": ["A şıkkı", "B şıkkı", "C şıkkı", "D şıkkı"], "correct": 0, "explanation": "Kısa açıklama.", "speech": "Şimdi bir soru sorayım. [soruyu oku]. Hadi birlikte çözelim." }
+  Soru şıklarında kesir/bölme ifadesi varsa {pay/payda} sözdizimi kullan. Örnek: "1 bölü 4" yerine "{1/4}", "2 tam 3 bölü 4" yerine "2 tam {3/4}".
   correct: 0-tabanlı indeks (0=A, 1=B, 2=C, 3=D).
   Toplam elemanların ~%20-25'i question olsun. Her soru, o konuyu anlatan bölümden sonra gelsin.
   ÖNEMLİ — Kapsam: Soru, dersin ilerleyen bölümlerinde anlatılacak kavramları içermesin. Ancak öğrencinin önceden bilmesi gereken farklı konulardaki ön bilgiler soruda kullanılabilir. Örneğin trigonometri dersinde henüz sadece sin ve cos anlatıldıysa, dersin devamında anlatılacak tan'ı sorma; ama daha önce öğrenilmiş temel aritmetik veya geometri bilgisi soruda yer alabilir.
@@ -245,11 +246,13 @@ Kurallar:
      strokeWidth: ~0.04, fontSize: ~0.5, point r: ~0.06 gibi küçük değerler kullan.
      Örnek: birim çember → { type:"circle", cx:0, cy:0, r:1, strokeWidth:0.04, stroke:"#60a5fa" }
   steps: Her adım shapes[] ve speech içerir. Drawing'de speech step seviyesindedir.
-  Şekil tipleri: line, circle, arc, rect, text, point, arrow, polygon, ellipse, polyline
+  Şekil tipleri: line, circle, arc, rect, text, point, arrow, polygon, ellipse, polyline, fraction
   polygon: { type: "polygon", points: [[x1,y1], [x2,y2], [x3,y3]], fill?, stroke?, strokeWidth? }
     points mutlaka dizi içinde [x,y] çiftleri olmalı. Örnek üçgen: points: [[200,50],[100,250],[300,250]]
   polyline: { type: "polyline", points: [[x1,y1], [x2,y2], ...], stroke?, strokeWidth?, smooth?: true }
     smooth: true ile noktalar arası yumuşak eğri çizilir (sinüs, dalga, parabolik eğri gibi). Yeterli nokta kullan (10-20 arası).
+  fraction: { type: "fraction", x: 200, y: 150, numerator: "3", denominator: "4", fontSize?: 16, fill?: "#e8e8d8" }
+    Kesir ve bölme işlemlerini bu şekille göster. Pay üstte, payda altta, aralarında çizgi olur. Düz metin "3/4" yerine fraction shape kullan.
   text shape: { type: "text", x, y, text, fontSize?, fill?, anchor?: "start"|"middle"|"end" }
   Açılar derece (0=sağ, saat yönünün tersi).
   Renkler: #f87171 (kırmızı), #60a5fa (mavi), #4ade80 (yeşil), #fbbf24 (sarı), #c084fc (mor)
@@ -260,6 +263,7 @@ Kurallar:
 - Sayıları rakamla yaz (5, 10 gibi).
 - Formüllerde çok satır varsa her formülü yeni satıra yaz (JSON'da \\n kullan). • karakterini satır ayracı olarak KULLANMA.
 - Formüllerde LaTeX sözdizimi KULLANMA (\\le, \\frac, \\sin, \\cos gibi). Düz metin ve Unicode semboller kullan. Örnekler: ≤, ≥, ≠, ×, ÷, √, π, ², ³, ½. Yanlış: "-1 \\le \\sin(x) \\le 1". Doğru: "-1 ≤ sin(x) ≤ 1".
+- Drawing içinde kesir/bölme gösterimi gerekiyorsa fraction shape kullan, "3/4" gibi düz metin yazma.
 - speech: o item gösterilirken sesli söylenecek metin (${cfg.speechLen}, doğal konuşma dili Türkçe). Her item'da speech olmalı (drawing hariç, drawing'de step'lerde).
 - speech'te formül değişkenlerini Türkçe harf adıyla yaz, tek harf bırakma. Örnekler: r → "re", l → "le", h → "he", b → "be", d → "de", n → "ne", x → "iks". π → "pi". Yanlış: "pi r l". Doğru: "pi re le".
 - Ders kendi içinde tam olsun. "Şimdi örnek çözeceğiz", "bir sonraki derste göreceğiz" gibi derste olmayan içeriklere atıf yapma. Son item dersi özetleyen veya öğrenileni pekiştiren bir kapanış olsun.`;

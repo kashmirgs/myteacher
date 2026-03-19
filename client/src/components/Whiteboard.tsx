@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { BoardItem } from '@myteacher/shared';
 import { DrawingCanvas } from './DrawingCanvas';
+import { FractionText } from './FractionText';
 
 interface WhiteboardProps {
   items: BoardItem[];
@@ -16,7 +17,7 @@ function QuestionItem({ item }: { item: Extract<BoardItem, { type: 'question' }>
 
   return (
     <div className="question-content">
-      <div className="question-text">{item.text}</div>
+      <div className="question-text"><FractionText text={item.text} /></div>
       <div className="question-options">
         {item.options.map((opt, i) => {
           let cls = 'question-option';
@@ -32,7 +33,7 @@ function QuestionItem({ item }: { item: Extract<BoardItem, { type: 'question' }>
               onClick={() => setSelected(i)}
             >
               <span className="question-option-label">{labels[i]}</span>
-              {opt}
+              <FractionText text={opt} />
             </button>
           );
         })}
@@ -40,7 +41,7 @@ function QuestionItem({ item }: { item: Extract<BoardItem, { type: 'question' }>
       {answered && (
         <div className={`question-result ${selected === item.correct ? 'correct' : 'wrong'}`}>
           {selected === item.correct ? 'Doğru!' : `Yanlış! Doğru cevap: ${labels[item.correct]}`}
-          <div className="question-explanation">{item.explanation}</div>
+          <div className="question-explanation"><FractionText text={item.explanation} /></div>
         </div>
       )}
     </div>
