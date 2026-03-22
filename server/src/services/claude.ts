@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { BoardItem } from "@myteacher/shared";
-import { parseBoardItems } from "../utils/llm-output.js";
+import { parseBoardItems, parseLLMJson } from "../utils/llm-output.js";
 import { createGeminiLLMService } from "./gemini.js";
 import { createMockLLMService } from "./mock.js";
 import type { ConversationHistory } from "./conversation.js";
@@ -31,13 +31,16 @@ export interface LLMService {
     transcript: string,
     history: ConversationHistory,
     callbacks: LLMStreamCallbacks,
+    gradeLevel?: number,
   ): LLMStreamHandle;
   answerAnnotation(
     boardItems: BoardItem[],
     clickedIndex: number,
     question: string,
     history: ConversationHistory,
+    gradeLevel?: number,
   ): Promise<string>;
+  generateBoardOnly?(speechText: string, history: ConversationHistory): Promise<BoardItem[]>;
 }
 
 function createFallbackLLMService(primary: LLMService, fallback: LLMService): LLMService {
@@ -64,6 +67,7 @@ function createFallbackLLMService(primary: LLMService, fallback: LLMService): LL
       transcript: string,
       history: ConversationHistory,
       callbacks: LLMStreamCallbacks,
+      gradeLevel?: number,
     ): LLMStreamHandle {
       let fallbackHandle: LLMStreamHandle | null = null;
       const handle = primary.streamSpeechResponse(transcript, history, {
@@ -71,9 +75,9 @@ function createFallbackLLMService(primary: LLMService, fallback: LLMService): LL
         onDone: callbacks.onDone,
         onError: (err) => {
           console.warn("[llm] primary streamSpeechResponse failed, using fallback:", err);
-          fallbackHandle = fallback.streamSpeechResponse(transcript, history, callbacks);
+          fallbackHandle = fallback.streamSpeechResponse(transcript, history, callbacks, gradeLevel);
         },
-      });
+      }, gradeLevel);
 
       return {
         abort: () => {
@@ -88,30 +92,81 @@ function createFallbackLLMService(primary: LLMService, fallback: LLMService): LL
       clickedIndex: number,
       question: string,
       history: ConversationHistory,
+      gradeLevel?: number,
     ): Promise<string> {
       try {
-        return await primary.answerAnnotation(boardItems, clickedIndex, question, history);
+        return await primary.answerAnnotation(boardItems, clickedIndex, question, history, gradeLevel);
       } catch (err) {
         console.warn("[llm] primary answerAnnotation failed, using fallback:", err);
-        return fallback.answerAnnotation(boardItems, clickedIndex, question, history);
+        return fallback.answerAnnotation(boardItems, clickedIndex, question, history, gradeLevel);
       }
     },
+
+    generateBoardOnly: primary.generateBoardOnly ?? fallback.generateBoardOnly,
   };
 }
 
-export const SPEECH_SYSTEM_PROMPT = `Sen "Öğretmenim" adında, ilkokul çağındaki çocuklara Türkçe ders anlatan sıcak ve sabırlı bir öğretmensin.
+export function buildSpeechSystemPrompt(gradeLevel?: number): string {
+  const { level, schoolType, tone } = getSchoolInfo(gradeLevel);
+  return `Sen "Öğretmenim" adında, ${level}. sınıf (${schoolType}) öğrencilerine Türkçe ders anlatan sıcak ve sabırlı bir öğretmensin.
 
 Kurallar:
 - Kısa ve net cevaplar ver (2-3 cümle).
-- Çocuklara uygun, basit bir dil kullan.
-- Teşvik edici ve pozitif ol.
+- ${tone}
 - Sadece düz metin olarak yanıt ver, markdown veya özel format kullanma.
 - Sayıları rakamla yaz (5, 10 gibi), yazıyla değil.
 - Her seferinde yeniden tanışma veya merhaba deme. Sohbet devam ediyorsa doğrudan konuya gir.
 - Önceki konuşmalardaki bilgileri hatırla ve tutarlı ol. Aynı şeyleri tekrarlama.
-- Tahtada bir ders varsa, öğrencinin soruları o dersle ilgili olabilir.`;
+- Tahtada bir ders varsa, öğrencinin soruları o dersle ilgili olabilir.
+
+Tahta desteği (opsiyonel):
+- Cevabın görsel açıklama gerektiriyorsa (formül, liste, diyagram), sesli cevap metninden SONRA ---BOARD--- marker'ı koy ve ardından JSON dizisi ekle.
+- Kullanılabilecek tipler: "formula", "text", "highlight", "list", "drawing"
+- Basit sorularda (selamlama, evet/hayır) tahta KULLANMA. Sadece gerçekten yardımcı olacaksa kullan.
+- En fazla 1-2 board item yeter, kısa tut.
+- Örnekler:
+  Soru: "3 çarpı 5 kaç eder?"
+  Cevap: 3 çarpı 5, 15 eder. Çarpma işlemi tekrarlı toplamadır.
+  ---BOARD---
+  [{"type":"formula","text":"3 × 5 = 15"}]
+
+  Soru: "Canlıları nasıl sınıflarız?"
+  Cevap: Canlıları bitkiler ve hayvanlar olarak iki ana gruba ayırabiliriz.
+  ---BOARD---
+  [{"type":"list","items":["Bitkiler","Hayvanlar"]}]
+
+  Soru: "Bir dalga çizebilir misin?"
+  Cevap: Tabii, sana bir dalga çizeyim. Bakın dalga böyle yukarı aşağı hareket eder.
+  ---BOARD---
+  [{"type":"drawing","steps":[{"shapes":[{"type":"polyline","points":[[20,150],[60,80],[100,150],[140,220],[180,150],[220,80],[260,150],[300,220],[340,150],[380,80]],"stroke":"#60a5fa","strokeWidth":2,"smooth":true},{"type":"text","x":200,"y":40,"text":"Dalga","fontSize":18,"fill":"#60a5fa","anchor":"middle"}],"speech":"İşte bir dalga. Yukarı çıkıp aşağı iniyor, tıpkı denizdeki dalgalar gibi."}]}]
+
+- Drawing referansı:
+  Koordinatlar piksel: x: 0-400, y: 0-300 (y aşağı doğru artar). Şekilleri bu alanda konumla.
+  steps: Her adım shapes[] ve speech içerir.
+  Şekil tipleri: line, circle, arc, rect, text, point, arrow, polygon, ellipse, polyline, fraction
+  polyline: { type: "polyline", points: [[x1,y1], [x2,y2], ...], stroke?, strokeWidth?, smooth?: true }
+    smooth: true ile noktalar arası yumuşak eğri çizilir (sinüs, dalga, parabolik eğri gibi). Yeterli nokta kullan (10-20 arası).
+    Eğrisel şekillerde ayrık line/arc parçaları KULLANMA, her zaman polyline + smooth: true kullan.
+  polygon: { type: "polygon", points: [[x1,y1], [x2,y2], [x3,y3]], fill?, stroke?, strokeWidth? }
+  text: { type: "text", x, y, text, fontSize?, fill?, anchor?: "start"|"middle"|"end" }
+  Renkler: #f87171 (kırmızı), #60a5fa (mavi), #4ade80 (yeşil), #fbbf24 (sarı), #c084fc (mor)
+  Konuyu açıklayacak kadar step ve shape kullan. Yukarıdaki dalga örneğindeki gibi anlamlı ve açıklayıcı bir çizim yap — tek çizgi ile geçiştirme.
+- ÖNEMLİ: Eğer cevabında "çiziyorum", "görebilirsin", "tahtaya yazıyorum" gibi bir ifade kullanıyorsan, ---BOARD--- marker'ını ve JSON'u MUTLAKA ekle. Marker olmadan bu tür ifadeler kullanma — ya marker ile birlikte söyle, ya da hiç bahsetme.`;
+}
+
+export const SPEECH_SYSTEM_PROMPT = buildSpeechSystemPrompt(1);
 
 export type LessonLength = "short" | "medium" | "long";
+
+function getSchoolInfo(gradeLevel?: number): { level: number; schoolType: string; tone: string } {
+  const level = gradeLevel ?? 1;
+  if (level <= 4) {
+    return { level, schoolType: "ilkokul", tone: "Çocuklara uygun, basit ve eğlenceli bir dil kullan." };
+  } else if (level <= 8) {
+    return { level, schoolType: "ortaokul", tone: "Öğrencilere uygun, açık ve anlaşılır bir dil kullan." };
+  }
+  return { level, schoolType: "lise", tone: "Lise öğrencilerine uygun, akademik ama anlaşılır bir dil kullan." };
+}
 
 const LESSON_LENGTH_CONFIG: Record<LessonLength, { items: string; speechLen: string }> = {
   short:  { items: "5-7 arası",  speechLen: "1-2 cümle" },
@@ -120,20 +175,8 @@ const LESSON_LENGTH_CONFIG: Record<LessonLength, { items: string; speechLen: str
 };
 
 function buildLessonSystemPrompt(gradeLevel?: number, length?: LessonLength): string {
-  const level = gradeLevel ?? 1;
+  const { level, schoolType, tone } = getSchoolInfo(gradeLevel);
   const cfg = LESSON_LENGTH_CONFIG[length ?? "short"];
-  let schoolType: string;
-  let tone: string;
-  if (level <= 4) {
-    schoolType = "ilkokul";
-    tone = "Çocuklara uygun, basit ve eğlenceli bir dil kullan.";
-  } else if (level <= 8) {
-    schoolType = "ortaokul";
-    tone = "Öğrencilere uygun, açık ve anlaşılır bir dil kullan.";
-  } else {
-    schoolType = "lise";
-    tone = "Lise öğrencilerine uygun, akademik ama anlaşılır bir dil kullan.";
-  }
   return `Sen ${level}. sınıf (${schoolType}) öğretmenisin. Sadece istenen JSON formatında yanıt ver.\nHer eleman için "speech" alanına o elemanın sesli anlatımını yaz (${cfg.speechLen}, konuşma dili).\n${tone}`;
 }
 
@@ -271,12 +314,72 @@ Kurallar:
 
 export { buildLessonSystemPrompt };
 
-export const ANNOTATION_SYSTEM_PROMPT = `Sen ilkokul öğretmenisin. Öğrenci tahtadaki bir öğeye tıklayıp soru sordu.
+export const BOARD_ONLY_SYSTEM_PROMPT = `Aşağıdaki konuşma metnine uygun bir tahta görseli üret. Sadece JSON dizisi döndür, başka hiçbir şey yazma.
+Kullanılabilecek tipler: "formula", "text", "highlight", "list", "drawing"
+En fazla 1-2 item üret, kısa tut.
+ÖNEMLİ: Konuşma metninde çizim, şekil, diyagram, grafik gibi görsel içerik bahsi varsa "drawing" tipi kullan — text veya formula ile geçiştirme.
+
+Drawing referansı:
+  İki mod var:
+  A) Diyagram modu (coordSystem YOK): Kümeler, Venn şemaları, akış diyagramları, geometrik şekiller, deneysel düzenekler, dalga/sinüs çizimleri için.
+     Koordinatlar piksel: x: 0-400, y: 0-300 (y aşağı doğru artar). Şekilleri bu alanda konumla.
+  B) Koordinat modu (coordSystem VAR): SADECE gerçek matematik grafikleri için (fonksiyon grafikleri, koordinat geometrisi, sayı doğrusu).
+     coordSystem steps'in yanında, drawing nesnesinin üst seviyesinde olmalı (step içinde DEĞİL!):
+     { "type": "drawing", "coordSystem": { xMin, xMax, yMin, yMax, showAxes?, showGrid?, gridStep? }, "steps": [...] }
+     y yukarı doğru artar.
+     Şekil koordinatları xMin-xMax ve yMin-yMax aralığında olmalı (piksel değil, matematik birimi).
+     strokeWidth: ~0.04, fontSize: ~0.5, point r: ~0.06 gibi küçük değerler kullan.
+
+  steps: Her adım shapes[] ve speech içerir. Çizimi anlamlı adımlara böl — her step bir kavramsal parça eklesin.
+  Şekil tipleri: line, circle, arc, rect, text, point, arrow, polygon, ellipse, polyline, fraction
+  polyline: { type: "polyline", points: [[x1,y1], [x2,y2], ...], stroke?, strokeWidth?, smooth?: true }
+    smooth: true ile noktalar arası yumuşak eğri çizilir (sinüs, dalga, parabolik eğri gibi).
+    ÖNEMLİ: Eğriler için 15-25 nokta kullan, az nokta ile eğri bozuk görünür!
+    Eğrisel şekillerde ayrık line/arc parçaları KULLANMA, her zaman polyline + smooth: true kullan.
+  polygon: { type: "polygon", points: [[x1,y1], [x2,y2], [x3,y3]], fill?, stroke?, strokeWidth? }
+    points mutlaka dizi içinde [x,y] çiftleri olmalı. Örnek üçgen: points: [[200,50],[100,250],[300,250]]
+  fraction: { type: "fraction", x: 200, y: 150, numerator: "3", denominator: "4", fontSize?: 16, fill?: "#e8e8d8" }
+    Kesir ve bölme işlemlerini bu şekille göster.
+  text: { type: "text", x, y, text, fontSize?, fill?, anchor?: "start"|"middle"|"end" }
+  arrow: { type: "arrow", x1, y1, x2, y2, stroke?, strokeWidth? }
+  Renkler: #f87171 (kırmızı), #60a5fa (mavi), #4ade80 (yeşil), #fbbf24 (sarı), #c084fc (mor)
+
+  Yerleşim kuralları:
+  - Etiket/başlık text'leri şeklin dışında olmalı, üst üste binmemeli.
+  - Başlık text'ini şeklin üst kenarından en az 20 piksel yukarıya koy.
+  - Elemanları şeklin merkezine yakın yerleştir, kenarlara yapışmasın.
+
+  Konuyu açıklayacak kadar step ve shape kullan — tek çizgi ile geçiştirme. Karmaşık konularda 3-5 step, her step'te 3-8 shape kullan.
+
+Örnekler:
+  Formül: [{"type":"formula","text":"3 × 5 = 15"}]
+  Sinüs dalgası (dikkat: 20 nokta, smooth):
+  [{"type":"drawing","steps":[{"shapes":[{"type":"polyline","points":[[10,150],[30,115],[50,85],[70,65],[90,55],[110,65],[130,85],[150,115],[170,150],[190,185],[210,215],[230,235],[250,245],[270,235],[290,215],[310,185],[330,150],[350,115],[370,85],[390,65]],"stroke":"#60a5fa","strokeWidth":2,"smooth":true},{"type":"text","x":200,"y":30,"text":"Sinüs Dalgası","fontSize":18,"fill":"#60a5fa","anchor":"middle"},{"type":"arrow","x1":10,"y1":150,"x2":395,"y2":150,"stroke":"#888","strokeWidth":1},{"type":"text","x":390,"y":140,"text":"x","fontSize":14,"fill":"#888","anchor":"end"}],"speech":"İşte bir sinüs dalgası. Dalga yukarı aşağı salınım yaparak ilerliyor."}]}]
+  Young deneyi:
+  [{"type":"drawing","steps":[{"shapes":[{"type":"rect","x":30,"y":60,"width":10,"height":180,"fill":"#fbbf24","stroke":"#fbbf24","strokeWidth":1},{"type":"text","x":35,"y":50,"text":"Işık kaynağı","fontSize":12,"fill":"#fbbf24","anchor":"middle"}],"speech":"Önce bir ışık kaynağı koyalım."},{"shapes":[{"type":"rect","x":140,"y":60,"width":6,"height":70,"fill":"#888","stroke":"#888","strokeWidth":1},{"type":"rect","x":140,"y":170,"width":6,"height":70,"fill":"#888","stroke":"#888","strokeWidth":1},{"type":"rect","x":140,"y":135,"width":6,"height":5,"fill":"#888","stroke":"#888","strokeWidth":1},{"type":"text","x":143,"y":50,"text":"Çift yarık","fontSize":12,"fill":"#c084fc","anchor":"middle"},{"type":"line","x1":40,"y1":130,"x2":140,"y2":130,"stroke":"#fbbf24","strokeWidth":1},{"type":"line","x1":40,"y1":170,"x2":140,"y2":170,"stroke":"#fbbf24","strokeWidth":1}],"speech":"Işık, iki dar yarıktan geçiyor. Bu yarıklar ışığı ikiye ayırıyor."},{"shapes":[{"type":"line","x1":146,"y1":130,"x2":320,"y2":80,"stroke":"#60a5fa","strokeWidth":1},{"type":"line","x1":146,"y1":130,"x2":320,"y2":150,"stroke":"#60a5fa","strokeWidth":1},{"type":"line","x1":146,"y1":130,"x2":320,"y2":220,"stroke":"#60a5fa","strokeWidth":1},{"type":"line","x1":146,"y1":170,"x2":320,"y2":80,"stroke":"#4ade80","strokeWidth":1},{"type":"line","x1":146,"y1":170,"x2":320,"y2":150,"stroke":"#4ade80","strokeWidth":1},{"type":"line","x1":146,"y1":170,"x2":320,"y2":220,"stroke":"#4ade80","strokeWidth":1}],"speech":"Her yarıktan geçen ışık dalgaları yayılarak ilerliyor ve birbirleriyle karışıyor."},{"shapes":[{"type":"rect","x":320,"y":60,"width":8,"height":180,"fill":"#1e293b","stroke":"#888","strokeWidth":1},{"type":"rect","x":322,"y":72,"width":4,"height":12,"fill":"#4ade80"},{"type":"rect","x":322,"y":98,"width":4,"height":12,"fill":"#4ade80"},{"type":"rect","x":322,"y":124,"width":4,"height":12,"fill":"#4ade80"},{"type":"rect","x":322,"y":150,"width":4,"height":12,"fill":"#4ade80"},{"type":"rect","x":322,"y":176,"width":4,"height":12,"fill":"#4ade80"},{"type":"rect","x":322,"y":202,"width":4,"height":12,"fill":"#4ade80"},{"type":"text","x":345,"y":80,"text":"Aydınlık","fontSize":11,"fill":"#4ade80","anchor":"start"},{"type":"text","x":345,"y":95,"text":"Karanlık","fontSize":11,"fill":"#f87171","anchor":"start"},{"type":"text","x":328,"y":50,"text":"Ekran","fontSize":12,"fill":"#888","anchor":"middle"}],"speech":"Ekranda aydınlık ve karanlık bantlar oluşuyor. Dalgalar birbirini güçlendirdiğinde aydınlık, zayıflattığında karanlık bant görünüyor. Buna girişim deseni diyoruz."}]}]
+  Üçgen: [{"type":"drawing","steps":[{"shapes":[{"type":"polygon","points":[[200,50],[100,250],[300,250]],"stroke":"#60a5fa","strokeWidth":2},{"type":"text","x":200,"y":30,"text":"Üçgen","fontSize":18,"fill":"#60a5fa","anchor":"middle"}],"speech":"İşte bir üçgen."}]}]`;
+
+export function buildAnnotationSystemPrompt(gradeLevel?: number): string {
+  const { level, schoolType, tone } = getSchoolInfo(gradeLevel);
+  return `Sen ${level}. sınıf (${schoolType}) öğretmenisin. Öğrenci tahtadaki bir öğeye tıklayıp soru sordu.
 Kurallar:
 - 1-3 cümle ile yanıtla.
 - Yanıtında tıklanan elemanın içindeki ifadeyi aynen tekrarla.
 - Sayıları rakamla yaz.
-- Çocuklara uygun, basit dil kullan.`;
+- ${tone}
+
+Tahta desteği (opsiyonel):
+- Açıklaman görsel gerektiriyorsa, sesli cevap metninden SONRA ---BOARD--- marker'ı koy ve ardından JSON dizisi ekle.
+- Kullanılabilecek tipler: "formula", "text", "highlight", "list", "drawing"
+- Basit açıklamalarda tahta KULLANMA. Sadece gerçekten yardımcı olacaksa kullan.
+- En fazla 1-2 board item yeter, kısa tut.
+- Örnek:
+  Cevap: Bu formül toplama işlemini gösteriyor. 3 ile 5'i birleştirince 8 elde ederiz.
+  ---BOARD---
+  [{"type":"formula","text":"3 + 5 = 8"}]`;
+}
+
+export const ANNOTATION_SYSTEM_PROMPT = buildAnnotationSystemPrompt(1);
 
 export function buildAnnotationContext(boardItems: BoardItem[], clickedIndex: number): string {
   return boardItems
@@ -341,13 +444,14 @@ function createClaudeLLMService(): LLMService {
       transcript: string,
       history: ConversationHistory,
       callbacks: LLMStreamCallbacks,
+      gradeLevel?: number,
     ): LLMStreamHandle {
       console.log(`[llm:claude] streaming speech response for: "${transcript.slice(0, 60)}..."`);
 
       const stream = client.messages.stream({
         model: "claude-haiku-4-5-20251001",
-        max_tokens: 512,
-        system: SPEECH_SYSTEM_PROMPT,
+        max_tokens: 1024,
+        system: buildSpeechSystemPrompt(gradeLevel),
         messages: history.getMessagesForClaude(),
       });
 
@@ -374,6 +478,7 @@ function createClaudeLLMService(): LLMService {
       clickedIndex: number,
       question: string,
       history: ConversationHistory,
+      gradeLevel?: number,
     ): Promise<string> {
       console.log(`[llm:claude] annotation click index=${clickedIndex}, question="${question}"`);
 
@@ -388,12 +493,33 @@ function createClaudeLLMService(): LLMService {
       const response = await client.messages.create({
         model: "claude-haiku-4-5-20251001",
         max_tokens: 512,
-        system: ANNOTATION_SYSTEM_PROMPT,
+        system: buildAnnotationSystemPrompt(gradeLevel),
         messages,
       });
       const block = response.content[0];
       if (block.type !== "text") throw new Error("Unexpected response type");
       return block.text;
+    },
+
+    async generateBoardOnly(speechText: string, history: ConversationHistory): Promise<BoardItem[]> {
+      console.log(`[llm:claude] generateBoardOnly for: "${speechText.slice(0, 60)}..."`);
+
+      const messages = [
+        ...history.getMessagesForClaude(),
+        { role: "user" as const, content: `Konuşma metni: ${speechText}` },
+      ];
+
+      const response = await client.messages.create({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 2048,
+        system: BOARD_ONLY_SYSTEM_PROMPT,
+        messages,
+      });
+      const block = response.content[0];
+      if (block.type !== "text") throw new Error("Unexpected response type");
+      const items = parseLLMJson(block.text);
+      if (!Array.isArray(items)) throw new Error("Expected JSON array");
+      return items as BoardItem[];
     },
   };
 }

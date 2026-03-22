@@ -11,6 +11,7 @@ export function App() {
   const [boardItems, setBoardItems] = useState<BoardItem[]>([]);
   const [revealedCount, setRevealedCount] = useState(0);
   const [drawingSteps, setDrawingSteps] = useState<Record<number, number>>({});
+  const [qaBoardItems, setQaBoardItems] = useState<BoardItem[]>([]);
   const [sessionState, setSessionState] = useState<SessionState>("idle");
   const [transcript, setTranscript] = useState("");
   const [aiResponse, setAiResponse] = useState("");
@@ -80,6 +81,14 @@ export function App() {
         boardItemsRef.current = msg.items;
         setRevealedCount(0);
         setDrawingSteps({});
+        setQaBoardItems([]); // Clear QA overlay when new lesson starts
+        break;
+      case "qa_board_update":
+        console.log("[qa_board_update] items:", JSON.stringify(msg.items, null, 2));
+        setQaBoardItems(msg.items);
+        break;
+      case "qa_board_clear":
+        setQaBoardItems([]);
         break;
       case "board_reveal": {
         setRevealedCount(msg.index + 1);
@@ -110,7 +119,7 @@ export function App() {
         }
         break;
       case "transcript":
-        if (msg.isFinal && sessionStateRef.current === "processing") {
+        if (sessionStateRef.current === "processing" || sessionStateRef.current === "speaking") {
           setAiResponse(msg.text);
         } else {
           setTranscript(msg.text);
@@ -240,13 +249,17 @@ export function App() {
     [send],
   );
 
+  const handleOverlayDismiss = useCallback(() => {
+    send({ type: "qa_overlay_dismiss" });
+  }, [send]);
+
   return (
     <div className="app">
       <header className="app-header">
         <h1>MyTeacher</h1>
       </header>
       <main className="app-main">
-        <Whiteboard items={boardItems} revealedCount={revealedCount} drawingSteps={drawingSteps} onAnnotationClick={handleAnnotationClick} />
+        <Whiteboard items={boardItems} revealedCount={revealedCount} drawingSteps={drawingSteps} onAnnotationClick={handleAnnotationClick} overlayItems={qaBoardItems} onOverlayDismiss={handleOverlayDismiss} />
       </main>
       <aside className="app-sidebar">
         <Controls

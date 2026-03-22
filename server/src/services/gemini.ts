@@ -1,10 +1,11 @@
 import { GoogleGenAI } from "@google/genai";
 import type { BoardItem } from "@myteacher/shared";
-import { parseBoardItems } from "../utils/llm-output.js";
+import { parseBoardItems, parseLLMJson } from "../utils/llm-output.js";
 import type { LLMService, LLMStreamCallbacks, LLMStreamHandle, LessonBoardItem, LessonLength, QuestionOptions } from "./claude.js";
 import {
-  SPEECH_SYSTEM_PROMPT,
-  ANNOTATION_SYSTEM_PROMPT,
+  buildSpeechSystemPrompt,
+  buildAnnotationSystemPrompt,
+  BOARD_ONLY_SYSTEM_PROMPT,
   buildLessonPrompt,
   buildLessonSystemPrompt,
   buildAnnotationContext,
@@ -53,7 +54,7 @@ export function createGeminiLLMService(): LLMService {
       const response = await ai.models.generateContent({
         model: "gemini-3.1-flash-lite-preview",
         contents: [{ role: "user", parts: [{ text: transcript }] }],
-        config: { systemInstruction: SPEECH_SYSTEM_PROMPT, maxOutputTokens: 512 },
+        config: { systemInstruction: buildSpeechSystemPrompt(), maxOutputTokens: 512 },
       });
 
       return response.text ?? "";
@@ -63,6 +64,7 @@ export function createGeminiLLMService(): LLMService {
       transcript: string,
       history: ConversationHistory,
       callbacks: LLMStreamCallbacks,
+      gradeLevel?: number,
     ): LLMStreamHandle {
       console.log(`[llm:gemini] streaming speech response for: "${transcript.slice(0, 60)}..."`);
 
@@ -74,8 +76,8 @@ export function createGeminiLLMService(): LLMService {
             model: "gemini-3.1-flash-lite-preview",
             contents: history.getMessagesForGemini(),
             config: {
-              systemInstruction: SPEECH_SYSTEM_PROMPT,
-              maxOutputTokens: 512,
+              systemInstruction: buildSpeechSystemPrompt(gradeLevel),
+              maxOutputTokens: 1024,
               abortSignal: controller.signal,
             },
           });
@@ -103,6 +105,7 @@ export function createGeminiLLMService(): LLMService {
       clickedIndex: number,
       question: string,
       history: ConversationHistory,
+      gradeLevel?: number,
     ): Promise<string> {
       console.log(`[llm:gemini] annotation click index=${clickedIndex}, question="${question}"`);
 
@@ -118,11 +121,33 @@ export function createGeminiLLMService(): LLMService {
         model: "gemini-3.1-flash-lite-preview",
         contents,
         config: {
-          systemInstruction: ANNOTATION_SYSTEM_PROMPT,
+          systemInstruction: buildAnnotationSystemPrompt(gradeLevel),
           maxOutputTokens: 512,
         },
       });
       return response.text ?? "";
+    },
+
+    async generateBoardOnly(speechText: string, history: ConversationHistory): Promise<BoardItem[]> {
+      console.log(`[llm:gemini] generateBoardOnly for: "${speechText.slice(0, 60)}..."`);
+
+      const contents = [
+        ...history.getMessagesForGemini(),
+        { role: "user" as const, parts: [{ text: `Konuşma metni: ${speechText}` }] },
+      ];
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3.1-pro-preview",
+        contents,
+        config: {
+          systemInstruction: BOARD_ONLY_SYSTEM_PROMPT,
+          maxOutputTokens: 2048,
+        },
+      });
+      const text = response.text ?? "";
+      const items = parseLLMJson(text);
+      if (!Array.isArray(items)) throw new Error("Expected JSON array");
+      return items as BoardItem[];
     },
   };
 }

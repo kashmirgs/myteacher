@@ -24,7 +24,7 @@ export type MockTTS = Omit<TTSService, "streamTTS" | "openStream" | "stop"> & {
 };
 export type MockLLM = Omit<
   LLMService,
-  "generateLesson" | "generateSpeechResponse" | "streamSpeechResponse" | "answerAnnotation"
+  "generateLesson" | "generateSpeechResponse" | "streamSpeechResponse" | "answerAnnotation" | "generateBoardOnly"
 > & {
   _streamCb: LLMStreamCallbacks | null;
   _abortFn: ReturnType<typeof vi.fn>;
@@ -32,6 +32,7 @@ export type MockLLM = Omit<
   generateSpeechResponse: ReturnType<typeof vi.fn>;
   streamSpeechResponse: ReturnType<typeof vi.fn>;
   answerAnnotation: ReturnType<typeof vi.fn>;
+  generateBoardOnly: ReturnType<typeof vi.fn>;
 };
 
 // ── Mock factories ──
@@ -96,6 +97,7 @@ export function createMockLLM(): MockLLM {
       return { abort: () => abort() };
     }),
     answerAnnotation: vi.fn().mockResolvedValue("Mocked annotation answer"),
+    generateBoardOnly: vi.fn().mockResolvedValue([{ type: "text", text: "fallback board" }]),
   };
 }
 

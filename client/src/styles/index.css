@@ -67,6 +67,36 @@ body {
   pointer-events: none;
 }
 
+/* Q&A in-board separator */
+.qa-separator {
+  border: none;
+  border-top: 2px dashed rgba(255, 255, 255, 0.25);
+  margin: 24px 0 16px;
+}
+
+/* Floating dismiss button */
+.qa-dismiss-floating {
+  position: sticky;
+  bottom: 16px;
+  display: block;
+  margin: 16px auto 8px;
+  padding: 12px 32px;
+  background: #2563eb;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  z-index: 5;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
+  transition: background 0.15s;
+}
+
+.qa-dismiss-floating:hover {
+  background: #1d4ed8;
+}
+
 .chalk-tray {
   position: absolute;
   bottom: 0; left: 0; right: 0;

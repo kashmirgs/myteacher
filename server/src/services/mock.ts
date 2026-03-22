@@ -77,6 +77,7 @@ export function createMockLLMService(): LLMService {
       transcript: string,
       _history: ConversationHistory,
       callbacks: LLMStreamCallbacks,
+      _gradeLevel?: number,
     ): LLMStreamHandle {
       console.log(`[llm:mock] streaming speech response for: "${transcript.slice(0, 60)}..."`);
       let cancelled = false;
@@ -98,10 +99,16 @@ export function createMockLLMService(): LLMService {
       clickedIndex: number,
       question: string,
       _history: ConversationHistory,
+      _gradeLevel?: number,
     ): Promise<string> {
       console.log(`[llm:mock] annotation click index=${clickedIndex}, question="${question}"`);
       const item = boardItems[clickedIndex];
       return buildMockAnnotationAnswer(item, question || "Bu ne demek?");
+    },
+
+    async generateBoardOnly(speechText: string, _history: ConversationHistory): Promise<BoardItem[]> {
+      console.log(`[llm:mock] generateBoardOnly for: "${speechText.slice(0, 60)}..."`);
+      return [{ type: "text", text: speechText }] as BoardItem[];
     },
   };
 }

@@ -1,11 +1,35 @@
 import type { WebSocket, RawData } from "ws";
-import type { ClientMessage, ServerMessage, BoardItem } from "@myteacher/shared";
+import type { ClientMessage, ServerMessage, BoardItem, Shape } from "@myteacher/shared";
 import { SessionStateMachine } from "../session/state-machine.js";
 import { createSTTService } from "../services/deepgram.js";
 import { createLLMService, type LLMStreamHandle, type LessonBoardItem } from "../services/claude.js";
 import { createTTSService } from "../services/cartesia.js";
 import { ConversationHistory } from "../services/conversation.js";
 import { getTopicById } from "../db/repository.js";
+
+const DRAWING_INTENT_PATTERNS = [
+  /(?:^|\s)çiz\w*/i,            // çiziyorum, çizeyim, çizerek, çizelim, çizeceğim, çizdim
+  /(?:^|\s)göster\w*/i,         // gösteriyorum, göstereyim, gösterelim, göstereceğim
+  /görebilirsin/i,
+  /tahtaya\s+\w*(?:çiz|yaz)/i,  // tahtaya çiz/yaz (herhangi ek ile)
+  /tahtada\s+göster/i,
+  /yazıyorum/i,
+];
+
+function speechImpliesDrawing(text: string): boolean {
+  return DRAWING_INTENT_PATTERNS.some(p => p.test(text));
+}
+
+/** Find board marker index, tolerating variations like `-- BOARD --`, `---BOARD ---`, extra dashes */
+function findBoardMarker(text: string): number {
+  const m = text.match(/-{2,}\s*BOARD\s*-{2,}/);
+  return m ? m.index! : -1;
+}
+
+function boardMarkerLength(text: string, startIdx: number): number {
+  const m = text.slice(startIdx).match(/^-{2,}\s*BOARD\s*-{2,}/);
+  return m ? m[0].length : 11; // fallback to "---BOARD---" length
+}
 
 /** Detect clause boundary: `.` `?` `!` followed by space or end-of-string, min 10 chars */
 function extractClause(buffer: string): { clause: string; remaining: string } | null {
@@ -34,11 +58,163 @@ function isResumeCommand(text: string): boolean {
   return RESUME_PATTERNS.test(cleaned);
 }
 
+/** Viewport bounds for drawing normalization */
+const VP_W = 400;
+const VP_H = 300;
+const VP_PAD = 20;
+const VP_MIN_X = VP_PAD;
+const VP_MAX_X = VP_W - VP_PAD;
+const VP_MIN_Y = VP_PAD;
+const VP_MAX_Y = VP_H - VP_PAD;
+
+/** Extract bounding box (minX, minY, maxX, maxY) from all shapes in a drawing step */
+function getShapeBounds(shapes: Shape[]): { minX: number; minY: number; maxX: number; maxY: number } | null {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  let hasCoords = false;
+
+  function expand(x: number, y: number) {
+    hasCoords = true;
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+
+  for (const s of shapes) {
+    switch (s.type) {
+      case "line":
+      case "arrow":
+        expand(s.x1, s.y1);
+        expand(s.x2, s.y2);
+        break;
+      case "circle":
+        expand(s.cx - s.r, s.cy - s.r);
+        expand(s.cx + s.r, s.cy + s.r);
+        break;
+      case "ellipse":
+        expand(s.cx - s.rx, s.cy - s.ry);
+        expand(s.cx + s.rx, s.cy + s.ry);
+        break;
+      case "arc":
+        expand(s.cx - s.r, s.cy - s.r);
+        expand(s.cx + s.r, s.cy + s.r);
+        break;
+      case "rect":
+        expand(s.x, s.y);
+        expand(s.x + s.width, s.y + s.height);
+        break;
+      case "text":
+      case "fraction":
+        expand(s.x, s.y);
+        break;
+      case "point":
+        expand(s.cx, s.cy);
+        break;
+      case "polyline":
+      case "polygon":
+        for (const [x, y] of s.points) expand(x, y);
+        break;
+    }
+  }
+
+  return hasCoords ? { minX, minY, maxX, maxY } : null;
+}
+
+/**
+ * Normalize drawing item coordinates to fit within the 400×300 viewport.
+ * Only rescales if any coordinate exceeds the viewport bounds.
+ */
+function normalizeDrawingCoords(items: BoardItem[]): BoardItem[] {
+  for (const item of items) {
+    if (item.type !== "drawing") continue;
+
+    // Collect all shapes across all steps to find global bounds
+    const allShapes: Shape[] = [];
+    for (const step of item.steps) {
+      allShapes.push(...step.shapes);
+    }
+
+    const bounds = getShapeBounds(allShapes);
+    if (!bounds) continue;
+
+    const { minX, minY, maxX, maxY } = bounds;
+    // Only normalize if coordinates exceed the viewport
+    if (minX >= 0 && minY >= 0 && maxX <= VP_W && maxY <= VP_H) continue;
+
+    const srcW = maxX - minX || 1;
+    const srcH = maxY - minY || 1;
+    const targetW = VP_MAX_X - VP_MIN_X;
+    const targetH = VP_MAX_Y - VP_MIN_Y;
+    const scale = Math.min(targetW / srcW, targetH / srcH);
+    // Center within the padded area
+    const offsetX = VP_MIN_X + (targetW - srcW * scale) / 2;
+    const offsetY = VP_MIN_Y + (targetH - srcH * scale) / 2;
+
+    function tx(x: number) { return (x - minX) * scale + offsetX; }
+    function ty(y: number) { return (y - minY) * scale + offsetY; }
+    function ts(v: number) { return v * scale; }
+
+    for (const step of item.steps) {
+      for (const s of step.shapes) {
+        switch (s.type) {
+          case "line":
+          case "arrow":
+            s.x1 = tx(s.x1); s.y1 = ty(s.y1);
+            s.x2 = tx(s.x2); s.y2 = ty(s.y2);
+            if (s.strokeWidth) s.strokeWidth = ts(s.strokeWidth);
+            break;
+          case "circle":
+            s.cx = tx(s.cx); s.cy = ty(s.cy);
+            s.r = ts(s.r);
+            if (s.strokeWidth) s.strokeWidth = ts(s.strokeWidth);
+            break;
+          case "ellipse":
+            s.cx = tx(s.cx); s.cy = ty(s.cy);
+            s.rx = ts(s.rx); s.ry = ts(s.ry);
+            if (s.strokeWidth) s.strokeWidth = ts(s.strokeWidth);
+            break;
+          case "arc":
+            s.cx = tx(s.cx); s.cy = ty(s.cy);
+            s.r = ts(s.r);
+            if (s.strokeWidth) s.strokeWidth = ts(s.strokeWidth);
+            break;
+          case "rect":
+            s.x = tx(s.x); s.y = ty(s.y);
+            s.width = ts(s.width); s.height = ts(s.height);
+            if (s.strokeWidth) s.strokeWidth = ts(s.strokeWidth);
+            break;
+          case "text":
+            s.x = tx(s.x); s.y = ty(s.y);
+            if (s.fontSize) s.fontSize = ts(s.fontSize);
+            break;
+          case "fraction":
+            s.x = tx(s.x); s.y = ty(s.y);
+            if (s.fontSize) s.fontSize = ts(s.fontSize);
+            break;
+          case "point":
+            s.cx = tx(s.cx); s.cy = ty(s.cy);
+            if (s.r) s.r = ts(s.r);
+            break;
+          case "polyline":
+          case "polygon":
+            for (let i = 0; i < s.points.length; i++) {
+              s.points[i] = [tx(s.points[i][0]), ty(s.points[i][1])];
+            }
+            if (s.strokeWidth) s.strokeWidth = ts(s.strokeWidth);
+            break;
+        }
+      }
+    }
+  }
+  return items;
+}
+
 export function handleConnection(ws: WebSocket): void {
   let boardItems: BoardItem[] = [];
   let pendingAudio: Buffer[] = [];
   let currentLLMHandle: LLMStreamHandle | null = null;
   let llmGeneration = 0;
+  let currentGradeLevel: number | undefined;
   let sttGeneration = 0;
   let sttActive = false;
   let sttRestartTimer: NodeJS.Timeout | null = null;
@@ -61,6 +237,37 @@ export function handleConnection(ws: WebSocket): void {
   let isLessonNarrating = false;
   let lastRevealedIdx = 0;
   let lastQAResponseLength = 0;
+  let awaitingOverlayDismiss = false;
+
+  // Lesson resume timeout – auto-resumes lesson if STT produces no transcript
+  // (e.g. noise-triggered barge-in) or overlay is not dismissed within timeout.
+  let lessonResumeTimer: NodeJS.Timeout | null = null;
+  const lessonResumeTimeoutMs = process.env.NODE_ENV === "test" ? 0 : 8000;
+
+  function startLessonResumeTimer() {
+    clearLessonResumeTimer();
+    if (!isLessonNarrating) return;
+    lessonResumeTimer = setTimeout(() => {
+      lessonResumeTimer = null;
+      if (!isLessonNarrating || session.getState() !== "listening") return;
+      console.log("[handler] lesson resume timeout — auto-resuming");
+      stopSTT();
+      awaitingOverlayDismiss = false;
+      send({ type: "qa_board_clear" });
+      if (!session.transition("processing")) return;
+      if (!session.transition("speaking")) return;
+      send({ type: "tts_start" });
+      resumeLesson(lastRevealedIdx + 1);
+    }, lessonResumeTimeoutMs);
+    revealTimers.push(lessonResumeTimer);
+  }
+
+  function clearLessonResumeTimer() {
+    if (lessonResumeTimer) {
+      clearTimeout(lessonResumeTimer);
+      lessonResumeTimer = null;
+    }
+  }
 
   const send = (msg: ServerMessage) => {
     if (ws.readyState === ws.OPEN) {
@@ -77,12 +284,15 @@ export function handleConnection(ws: WebSocket): void {
   /** Start a speech response cycle: streaming LLM → clause-based TTS → back to listening */
   function handleFinalTranscript(text: string) {
     if (session.getState() !== "listening") return;
+    clearLessonResumeTimer();
 
     // Ders anlatımı sırasında "devam et" benzeri ifadeler → LLM'i atla, direkt resume
     if (isLessonNarrating) {
       const resume = isResumeCommand(text);
       console.log(`[handler] transcript during lesson: "${text}", isResumeCommand=${resume}, lastRevealedIdx=${lastRevealedIdx}`);
       if (resume) {
+        awaitingOverlayDismiss = false;
+        send({ type: "qa_board_clear" });
         if (!session.transition("processing")) return;
         if (!session.transition("speaking")) return;
         // Client audio player was stopped by barge-in, so send tts_start
@@ -113,6 +323,9 @@ export function handleConnection(ws: WebSocket): void {
     const gen = ++llmGeneration;
 
     let buffer = "";
+    let boardMarkerDetected = false;
+    let fedLength = 0;
+    let qaBoardSent = false;
 
     // Pre-open Cartesia WS immediately (in parallel with LLM streaming)
     const ttsHandle = tts.openStream({
@@ -129,18 +342,30 @@ export function handleConnection(ws: WebSocket): void {
           firstTtsChunkSent = false;
         }
       },
-      // ⚠️ AUDIO PIPELINE — When isLessonNarrating, onEnd triggers resumeLesson()
-      // instead of sending tts_end. This keeps the client audio player in playing
-      // mode so resumed lesson chunks append seamlessly. The state_change:speaking
-      // sent here is for VAD reset + grace period, NOT for audioPlayer.start().
+      // ⚠️ AUDIO PIPELINE — Q&A onEnd sets awaitingOverlayDismiss=true and sends
+      // tts_end + transitions to listening. The overlay stays visible until the
+      // client sends qa_overlay_dismiss. For lesson narration, dismiss triggers
+      // resumeLesson(). For free chat, dismiss just clears the overlay.
       onEnd: () => {
         if (session.getState() !== "speaking") return;
         if (isLessonNarrating) {
-          console.log(`[handler] Q&A TTS ended, resuming lesson from idx ${lastRevealedIdx + 1}`);
-          send({ type: "state_change", state: "speaking" });
-          resumeLesson(lastRevealedIdx + 1);
+          if (qaBoardSent) {
+            console.log(`[handler] Q&A TTS ended, waiting for overlay dismiss before resuming lesson from idx ${lastRevealedIdx + 1}`);
+            awaitingOverlayDismiss = true;
+            send({ type: "tts_end" });
+            session.transition("listening");
+            suppressTranscriptsUntil = performance.now() + ttsEndSuppressMs;
+            scheduleSTTStart(ttsEndSTTDelayMs);
+            pendingAudio.length = 0;
+            startLessonResumeTimer();
+          } else {
+            // No board sent — resume lesson directly without waiting for overlay dismiss
+            console.log(`[handler] Q&A TTS ended, no board sent, resuming lesson directly from idx ${lastRevealedIdx + 1}`);
+            resumeLesson(lastRevealedIdx + 1);
+          }
           return;
         }
+        awaitingOverlayDismiss = true;
         send({ type: "tts_end" });
         session.transition("listening");
         suppressTranscriptsUntil = performance.now() + ttsEndSuppressMs;
@@ -167,7 +392,21 @@ export function handleConnection(ws: WebSocket): void {
           firstToken = false;
         }
 
+        // If marker already detected, ignore further deltas (JSON accumulates in snapshot)
+        if (boardMarkerDetected) {
+          return;
+        }
+
         buffer += delta;
+
+        // Check if marker appears in the buffer
+        const markerIdx = findBoardMarker(snapshot);
+        if (markerIdx !== -1) {
+          boardMarkerDetected = true;
+          const speechSnapshot = snapshot.slice(0, markerIdx).trimEnd();
+          send({ type: "transcript", text: speechSnapshot, isFinal: false });
+          return;
+        }
 
         // Send partial transcript to client
         send({ type: "transcript", text: snapshot, isFinal: false });
@@ -176,6 +415,7 @@ export function handleConnection(ws: WebSocket): void {
         let extracted = extractClause(buffer);
         while (extracted) {
           const { clause, remaining } = extracted;
+          fedLength += buffer.length - remaining.length;
           buffer = remaining;
 
           if (firstClause) {
@@ -191,9 +431,19 @@ export function handleConnection(ws: WebSocket): void {
 
       onDone(fullText) {
         if (gen !== llmGeneration) return;
-        if (isLessonNarrating) lastQAResponseLength = fullText.length;
-        history.addAssistantMessage(fullText);
-        send({ type: "transcript", text: fullText, isFinal: true });
+
+        // Split at board marker if present
+        let speechText = fullText;
+        let boardJson = "";
+        const markerIdx = findBoardMarker(fullText);
+        if (markerIdx !== -1) {
+          speechText = fullText.slice(0, markerIdx).trimEnd();
+          boardJson = fullText.slice(markerIdx + boardMarkerLength(fullText, markerIdx)).trim();
+        }
+
+        if (isLessonNarrating) lastQAResponseLength = speechText.length;
+        history.addAssistantMessage(speechText);
+        send({ type: "transcript", text: speechText, isFinal: true });
 
         if (firstClause) {
           // No clause boundary was ever detected — treat full text as single clause
@@ -201,9 +451,69 @@ export function handleConnection(ws: WebSocket): void {
           if (!session.transition("speaking")) return;
         }
 
-        // Flush remaining buffer as final clause
-        const remaining = firstClause ? fullText : buffer.trim();
+        // Flush remaining unfed speech as final clause
+        const remaining = firstClause ? speechText : speechText.slice(fedLength).trim();
         ttsHandle.feed(remaining || "", true);
+
+        // Parse inline board (single parse)
+        let inlineParsedItems: BoardItem[] = [];
+        if (boardJson) {
+          try {
+            const items = JSON.parse(boardJson);
+            if (Array.isArray(items) && items.length > 0) {
+              inlineParsedItems = items;
+            }
+          } catch (e) {
+            console.warn("[handler] failed to parse Q&A board JSON:", boardJson.slice(0, 300), e);
+          }
+        }
+
+        const hasDrawing = inlineParsedItems.some(i => i.type === "drawing");
+
+        if (hasDrawing && llm.generateBoardOnly) {
+          // Drawing var → non-drawing itemleri hemen gönder, drawing için pro model bekle
+          const nonDrawingItems = inlineParsedItems.filter(i => i.type !== "drawing");
+          if (nonDrawingItems.length > 0) {
+            normalizeDrawingCoords(nonDrawingItems);
+            send({ type: "qa_board_update", items: nonDrawingItems });
+            qaBoardSent = true;
+          }
+          // Pro model ile drawing üret
+          const enrichedPrompt = `Konuşma metni: ${speechText}\n\nBu konuyu detaylı ve anlaşılır bir çizimle tahtada göster. Birden fazla adım (step) kullan.`;
+          llm.generateBoardOnly(enrichedPrompt, history)
+            .then(proItems => {
+              if (gen !== llmGeneration || proItems.length === 0) return;
+              const proDrawings = proItems.filter(i => i.type === "drawing");
+              const merged = [...nonDrawingItems, ...(proDrawings.length > 0 ? proDrawings : proItems)];
+              normalizeDrawingCoords(merged);
+              send({ type: "qa_board_update", items: merged });
+              qaBoardSent = true;
+            })
+            .catch(err => {
+              console.warn("[handler] pro board generation failed, falling back to inline:", err);
+              // Fallback: inline drawing'i gönder (kötü kalite ama hiç yoktan iyi)
+              normalizeDrawingCoords(inlineParsedItems);
+              send({ type: "qa_board_update", items: inlineParsedItems });
+              qaBoardSent = true;
+            });
+        } else if (inlineParsedItems.length > 0) {
+          // Drawing yok → inline board'u olduğu gibi gönder
+          normalizeDrawingCoords(inlineParsedItems);
+          send({ type: "qa_board_update", items: inlineParsedItems });
+          qaBoardSent = true;
+        } else if (speechImpliesDrawing(speechText) && llm.generateBoardOnly) {
+          // Board yok ama speech drawing imply ediyor → pro model ile üret
+          const enrichedPrompt = `Konuşma metni: ${speechText}\n\nBu konuyu detaylı ve anlaşılır bir çizimle tahtada göster. Birden fazla adım (step) kullan.`;
+          llm.generateBoardOnly(enrichedPrompt, history)
+            .then(items => {
+              if (gen === llmGeneration && items.length > 0) {
+                normalizeDrawingCoords(items);
+                send({ type: "qa_board_update", items });
+                qaBoardSent = true;
+              }
+            })
+            .catch(err => console.warn("[handler] fallback board failed:", err));
+        }
 
         currentLLMHandle = null;
         console.log(
@@ -221,7 +531,7 @@ export function handleConnection(ws: WebSocket): void {
         });
         session.transition("idle");
       },
-    });
+    }, currentGradeLevel);
   }
 
   /** Start STT with proper transcript handling */
@@ -775,6 +1085,7 @@ export function handleConnection(ws: WebSocket): void {
           console.log("[handler] stop_listening ignored (recent barge_in)");
           break;
         }
+        clearLessonResumeTimer();
         llmGeneration++;
         currentLLMHandle?.abort();
         currentLLMHandle = null;
@@ -815,6 +1126,7 @@ export function handleConnection(ws: WebSocket): void {
           lastRevealedIdx,
         );
         lastBargeInAt = performance.now();
+        awaitingOverlayDismiss = false;
         if (state === "listening") {
           console.log("[handler] barge_in ignored (already listening)");
           break;
@@ -824,6 +1136,7 @@ export function handleConnection(ws: WebSocket): void {
         currentLLMHandle?.abort();
         currentLLMHandle = null;
         tts.stop();
+        send({ type: "qa_board_clear" });
         revealTimers.forEach((t) => clearTimeout(t));
         revealTimers = [];
         if (state === "speaking") {
@@ -834,6 +1147,7 @@ export function handleConnection(ws: WebSocket): void {
           pendingAudio.length = 0;
           session.bargeIn(); // speaking → listening
           scheduleSTTStart();
+          if (isLessonNarrating) startLessonResumeTimer();
         } else if (state === "processing") {
           if (session.transition("idle") && session.transition("listening")) {
             scheduleSTTStart();
@@ -873,6 +1187,8 @@ export function handleConnection(ws: WebSocket): void {
           break;
         }
 
+        currentGradeLevel = topic.gradeLevel;
+
         let lessonItems: LessonBoardItem[];
         try {
           lessonItems = JSON.parse(topic.boardItems) as LessonBoardItem[];
@@ -883,6 +1199,21 @@ export function handleConnection(ws: WebSocket): void {
         }
 
         startNarration(lessonItems);
+        break;
+      }
+
+      case "qa_overlay_dismiss": {
+        if (!awaitingOverlayDismiss) break;
+        clearLessonResumeTimer();
+        awaitingOverlayDismiss = false;
+        send({ type: "qa_board_clear" });
+        if (isLessonNarrating) {
+          // Resume lesson narration
+          if (!session.transition("processing")) break;
+          if (!session.transition("speaking")) break;
+          send({ type: "state_change", state: "speaking" });
+          resumeLesson(lastRevealedIdx + 1);
+        }
         break;
       }
 
@@ -897,10 +1228,44 @@ export function handleConnection(ws: WebSocket): void {
 
         try {
           const q = msg.question || "Bu ne demek?";
-          const answer = await llm.answerAnnotation(boardItems, msg.index, q, history);
+          const rawAnswer = await llm.answerAnnotation(boardItems, msg.index, q, history, currentGradeLevel);
+
+          // Split at board marker if present
+          let speechText = rawAnswer;
+          let boardJson = "";
+          const markerIdx = findBoardMarker(rawAnswer);
+          if (markerIdx !== -1) {
+            speechText = rawAnswer.slice(0, markerIdx).trimEnd();
+            boardJson = rawAnswer.slice(markerIdx + boardMarkerLength(rawAnswer, markerIdx)).trim();
+          }
+
           history.addUserMessage(q);
-          history.addAssistantMessage(answer);
-          send({ type: "transcript", text: answer, isFinal: true });
+          history.addAssistantMessage(speechText);
+          send({ type: "transcript", text: speechText, isFinal: true });
+
+          let annotationBoardSent = false;
+          if (boardJson) {
+            try {
+              const items = JSON.parse(boardJson);
+              if (Array.isArray(items) && items.length > 0) {
+                send({ type: "qa_board_update", items });
+                annotationBoardSent = true;
+              }
+            } catch (e) {
+              console.warn("[handler] failed to parse annotation board JSON:", boardJson.slice(0, 300), e);
+            }
+          }
+
+          // Fallback: if speech implies drawing but no board was sent
+          if (!annotationBoardSent && speechImpliesDrawing(speechText) && llm.generateBoardOnly) {
+            llm.generateBoardOnly(speechText, history)
+              .then(items => {
+                if (items.length > 0) {
+                  send({ type: "qa_board_update", items });
+                }
+              })
+              .catch(err => console.warn("[handler] fallback annotation board failed:", err));
+          }
         } catch (err) {
           send({
             type: "error",
@@ -914,6 +1279,7 @@ export function handleConnection(ws: WebSocket): void {
 
   ws.on("close", () => {
     console.log("[ws] client disconnected");
+    clearLessonResumeTimer();
     llmGeneration++;
     currentLLMHandle?.abort();
     currentLLMHandle = null;

@@ -80,7 +80,8 @@ export type ClientMessage =
   | { type: "barge_in" }
   | { type: "annotation_click"; index: number; question: string }
   | { type: "generate_lesson"; topic: string }
-  | { type: "start_preset_lesson"; topicId: string };
+  | { type: "start_preset_lesson"; topicId: string }
+  | { type: "qa_overlay_dismiss" };
 
 // ── Server → Client Messages ──
 
@@ -93,4 +94,6 @@ export type ServerMessage =
   | { type: "tts_start" }
   | { type: "tts_end" }
   | { type: "state_change"; state: SessionState }
+  | { type: "qa_board_update"; items: BoardItem[] }
+  | { type: "qa_board_clear" }
   | { type: "error"; message: string };

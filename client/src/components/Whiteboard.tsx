@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import type { BoardItem } from '@myteacher/shared';
 import { DrawingCanvas } from './DrawingCanvas';
 import { FractionText } from './FractionText';
@@ -8,6 +8,8 @@ interface WhiteboardProps {
   revealedCount: number;
   drawingSteps: Record<number, number>;
   onAnnotationClick: (index: number) => void;
+  overlayItems?: BoardItem[];
+  onOverlayDismiss?: () => void;
 }
 
 function QuestionItem({ item }: { item: Extract<BoardItem, { type: 'question' }> }) {
@@ -48,7 +50,14 @@ function QuestionItem({ item }: { item: Extract<BoardItem, { type: 'question' }>
   );
 }
 
-export function Whiteboard({ items, revealedCount, drawingSteps, onAnnotationClick }: WhiteboardProps) {
+export function Whiteboard({ items, revealedCount, drawingSteps, onAnnotationClick, overlayItems, onOverlayDismiss }: WhiteboardProps) {
+  const qaSeparatorRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (overlayItems && overlayItems.length > 0 && qaSeparatorRef.current) {
+      qaSeparatorRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [overlayItems]);
   return (
     <div className="board-panel">
       {items.map((item, index) => {
@@ -101,6 +110,51 @@ export function Whiteboard({ items, revealedCount, drawingSteps, onAnnotationCli
           </div>
         );
       })}
+      {overlayItems && overlayItems.length > 0 && (
+        <>
+          <div className="qa-separator" ref={qaSeparatorRef} />
+          {overlayItems.map((item, index) => {
+            const key = `qa-${index}`;
+            if (item.type === 'drawing') {
+              if (!item.steps?.length) return null;
+              return (
+                <div key={key} className="board-item board-item--visible" data-type="drawing">
+                  <DrawingCanvas item={item} revealedSteps={item.steps.length} />
+                </div>
+              );
+            }
+            if (item.type === 'question') {
+              return (
+                <div key={key} className="board-item board-item--visible" data-type="question">
+                  <QuestionItem item={item} />
+                </div>
+              );
+            }
+            if (item.type === 'list') {
+              if (!Array.isArray(item.items)) return null;
+              return (
+                <div key={key} className="board-item board-item--visible" data-type="list">
+                  <ul>
+                    {item.items.map((entry, i) => (
+                      <li key={i}>{entry}</li>
+                    ))}
+                  </ul>
+                </div>
+              );
+            }
+            const text = 'text' in item ? item.text : null;
+            if (!text) return null;
+            return (
+              <div key={key} className="board-item board-item--visible" data-type={item.type}>
+                {text}
+              </div>
+            );
+          })}
+          <button className="qa-dismiss-floating" onClick={onOverlayDismiss}>
+            Anladım ✓
+          </button>
+        </>
+      )}
       <div className="chalk-tray" />
     </div>
   );

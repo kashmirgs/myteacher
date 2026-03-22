@@ -152,7 +152,7 @@ describe("handleConnection", () => {
       await vi.waitFor(() => expect(mockTTS.openStream).toHaveBeenCalled());
 
       expect(mockSTT.stop).toHaveBeenCalled();
-      expect(mockLLM.streamSpeechResponse).toHaveBeenCalledWith("Merhaba", expect.any(Object), expect.any(Object));
+      expect(mockLLM.streamSpeechResponse).toHaveBeenCalledWith("Merhaba", expect.any(Object), expect.any(Object), undefined);
 
       // The mock emits "Mocked LLM response" as a single token — no clause boundary
       // detected (no `.?!` followed by space), so full text is fed to TTS in onDone
@@ -205,7 +205,7 @@ describe("handleConnection", () => {
       // Now in speaking state
     }
 
-    it("transitions speaking → listening and restarts STT", async () => {
+    it("transitions speaking → listening, awaits overlay dismiss", async () => {
       await driveToSpeaking();
       mockSTT.start.mockClear();
 
@@ -217,6 +217,18 @@ describe("handleConnection", () => {
         state: "listening",
       });
       expect(mockSTT.start).toHaveBeenCalledOnce();
+      // qa_board_clear should NOT be sent yet (awaiting overlay dismiss)
+      expect(ws.sentOfType("qa_board_clear")).toHaveLength(0);
+    });
+
+    it("sends qa_board_clear on overlay dismiss after TTS end", async () => {
+      await driveToSpeaking();
+      mockTTS._openStreamCb!.onEnd();
+
+      // Simulate client dismissing the overlay
+      ws.receiveJSON({ type: "qa_overlay_dismiss" });
+
+      expect(ws.sentOfType("qa_board_clear")).toHaveLength(1);
     });
 
     it("discards pendingAudio after onEnd (echo-contaminated)", async () => {
@@ -557,8 +569,8 @@ describe("handleConnection", () => {
         state: "listening",
       });
 
-      // ── User asks a question (final transcript) ──
-      // Override LLM to emit a clause so we transition to speaking
+      // ── User asks a question (final transcript) — LLM responds with board ──
+      // Override LLM to emit a clause with board marker so we transition to speaking
       (mockLLM.streamSpeechResponse as ReturnType<typeof vi.fn>).mockImplementationOnce(function (
         this: MockLLM,
         _transcript: string,
@@ -567,8 +579,9 @@ describe("handleConnection", () => {
       ) {
         this._streamCb = callbacks;
         queueMicrotask(() => {
+          const text = 'Evet, doğru. \n---BOARD---\n[{"type":"text","text":"açıklama"}]';
           callbacks.onToken("Evet, doğru. ", "Evet, doğru. ");
-          callbacks.onDone("Evet, doğru.");
+          callbacks.onDone(text);
         });
         return { abort: this._abortFn };
       });
@@ -584,28 +597,38 @@ describe("handleConnection", () => {
         });
       });
 
-      // ── Q&A TTS ends → lesson should resume ──
-      // Get the Q&A openStream callback (the latest one)
+      // ── Q&A TTS ends → overlay dismiss awaited ──
       const qaStreamCb = mockTTS._openStreamCalls[initialOpenStreamCount];
       qaStreamCb.onEnd();
+
+      // tts_end sent, state transitions to listening (awaiting dismiss)
+      expect(ws.sentOfType("tts_end").length).toBeGreaterThanOrEqual(1);
+      expect(ws.sentOfType("state_change").at(-1)).toEqual({
+        type: "state_change",
+        state: "listening",
+      });
+
+      // qa_board_clear NOT yet sent (awaiting dismiss)
+      const clearCountBefore = ws.sentOfType("qa_board_clear").length;
+
+      // ── Client sends overlay dismiss → lesson resumes ──
+      ws.receiveJSON({ type: "qa_overlay_dismiss" });
+
+      // qa_board_clear sent after dismiss
+      expect(ws.sentOfType("qa_board_clear").length).toBe(clearCountBefore + 1);
 
       // resumeLesson should have opened another TTS stream
       await vi.waitFor(() => {
         expect(mockTTS._openStreamCalls.length).toBe(initialOpenStreamCount + 2);
       });
 
-      // No tts_end should have been sent between Q&A and resume
-      // (the key fix: tts_end is NOT sent when isLessonNarrating)
       const ttsEndCount = ws.sentOfType("tts_end").length;
 
       // board_reveal events should be sent for remaining items
       const reveals = ws.sentOfType("board_reveal").map((m: { index: number }) => m.index);
-      // Should have reveals for remaining items after barge-in point
-      // lastRevealedIdx was 0 (title), so resume starts from idx 1
-      // At minimum, idx 1 should be revealed immediately by resumeLesson
       expect(reveals).toContain(1);
 
-      // Session should still be in speaking (not listening)
+      // Session should be in speaking (resumed)
       expect(ws.sentOfType("state_change").at(-1)).toEqual({
         type: "state_change",
         state: "speaking",
@@ -631,7 +654,7 @@ describe("handleConnection", () => {
       // Barge-in during lesson
       ws.receiveJSON({ type: "barge_in" });
 
-      // Q&A
+      // Q&A with board marker
       (mockLLM.streamSpeechResponse as ReturnType<typeof vi.fn>).mockImplementationOnce(function (
         this: MockLLM,
         _transcript: string,
@@ -640,8 +663,9 @@ describe("handleConnection", () => {
       ) {
         this._streamCb = callbacks;
         queueMicrotask(() => {
+          const text = 'Evet, doğru. \n---BOARD---\n[{"type":"text","text":"açıklama"}]';
           callbacks.onToken("Evet, doğru. ", "Evet, doğru. ");
-          callbacks.onDone("Evet, doğru.");
+          callbacks.onDone(text);
         });
         return { abort: this._abortFn };
       });
@@ -655,9 +679,12 @@ describe("handleConnection", () => {
         });
       });
 
-      // Q&A TTS ends → resume starts
+      // Q&A TTS ends → awaiting dismiss (board was sent)
       const qaStreamCb = mockTTS._openStreamCalls[initialOpenStreamCount];
       qaStreamCb.onEnd();
+
+      // Dismiss overlay → resume starts
+      ws.receiveJSON({ type: "qa_overlay_dismiss" });
 
       await vi.waitFor(() => {
         expect(mockTTS._openStreamCalls.length).toBe(initialOpenStreamCount + 2);
@@ -683,23 +710,57 @@ describe("handleConnection", () => {
       expect(speakingCountAfter2).toBe(speakingCountAfter);
     });
 
-    it("resume with no remaining speeches transitions to listening", async () => {
-      // Use a lesson with only title + 1 item
-      const shortLesson = [
-        { type: "heading", text: "Short", speech: "" },
-        { type: "text", text: "Only item", speech: "Only speech." },
-      ];
-      (mockLLM.generateLesson as ReturnType<typeof vi.fn>).mockResolvedValueOnce(shortLesson);
-      ws.receiveJSON({ type: "generate_lesson", topic: "short" });
-      await vi.waitFor(() => expect(mockTTS.openStream).toHaveBeenCalled());
+    it("voice resume ('devam et') sends qa_board_clear before resuming lesson", async () => {
+      await startLesson();
+      const initialOpenStreamCount = mockTTS._openStreamCalls.length;
 
-      // Barge-in after all items revealed (simulate lastRevealedIdx = 1)
-      // First, let reveal timer fire for idx 1
-      // The lesson TTS onEnd would set isLessonNarrating = false,
-      // but let's barge in while still narrating
+      // Barge-in during lesson
       ws.receiveJSON({ type: "barge_in" });
 
-      // Q&A
+      // Q&A answer with board marker
+      (mockLLM.streamSpeechResponse as ReturnType<typeof vi.fn>).mockImplementationOnce(function (
+        this: MockLLM,
+        _transcript: string,
+        _history: unknown,
+        callbacks: LLMStreamCallbacks,
+      ) {
+        this._streamCb = callbacks;
+        queueMicrotask(() => {
+          const text = 'Evet. \n---BOARD---\n[{"type":"text","text":"açıklama"}]';
+          callbacks.onToken("Evet. ", "Evet. ");
+          callbacks.onDone(text);
+        });
+        return { abort: this._abortFn };
+      });
+
+      mockSTT._startCb!.onTranscript("Bu ne?", true);
+      await vi.waitFor(() => expect(mockTTS.openStream).toHaveBeenCalledTimes(initialOpenStreamCount + 1));
+
+      // Q&A TTS ends → awaiting dismiss (board was sent)
+      const qaStreamCb = mockTTS._openStreamCalls[initialOpenStreamCount];
+      qaStreamCb.onEnd();
+
+      // Voice resume instead of button dismiss
+      const clearCountBefore = ws.sentOfType("qa_board_clear").length;
+      mockSTT._startCb!.onTranscript("devam et", true);
+
+      // qa_board_clear must be sent
+      expect(ws.sentOfType("qa_board_clear").length).toBe(clearCountBefore + 1);
+
+      // Lesson should resume (new TTS stream opened)
+      await vi.waitFor(() => {
+        expect(mockTTS._openStreamCalls.length).toBe(initialOpenStreamCount + 2);
+      });
+    });
+
+    it("Q&A without board auto-resumes lesson on TTS end (no dismiss needed)", async () => {
+      await startLesson();
+      const initialOpenStreamCount = mockTTS._openStreamCalls.length;
+
+      // Barge-in during lesson
+      ws.receiveJSON({ type: "barge_in" });
+
+      // Q&A answer WITHOUT board marker
       (mockLLM.streamSpeechResponse as ReturnType<typeof vi.fn>).mockImplementationOnce(function (
         this: MockLLM,
         _transcript: string,
@@ -715,7 +776,7 @@ describe("handleConnection", () => {
       });
 
       mockSTT._startCb!.onTranscript("Anladım", true);
-      await vi.waitFor(() => expect(mockTTS.openStream).toHaveBeenCalledTimes(2));
+      await vi.waitFor(() => expect(mockTTS.openStream).toHaveBeenCalledTimes(initialOpenStreamCount + 1));
 
       await vi.waitFor(() => {
         expect(ws.sentOfType("state_change").at(-1)).toEqual({
@@ -724,16 +785,418 @@ describe("handleConnection", () => {
         });
       });
 
-      // Q&A TTS ends — lastRevealedIdx is 0 (only title was revealed before barge-in)
-      // but idx 1 speech has already been narrated, so remaining from idx 1 should work
-      const qaCb = mockTTS._openStreamCalls[1];
+      // Q&A TTS ends — no board was sent, so lesson should auto-resume
+      const qaCb = mockTTS._openStreamCalls[initialOpenStreamCount];
       qaCb.onEnd();
 
-      // Since lastRevealedIdx was 0 at barge-in, resume from 1
-      // There's only speech at idx 1, so it should open a new stream and narrate
+      // awaitingOverlayDismiss should NOT be set — lesson auto-resumes
+      // A new TTS stream should be opened for the resumed lesson
       await vi.waitFor(() => {
-        expect(mockTTS._openStreamCalls.length).toBeGreaterThanOrEqual(3);
+        expect(mockTTS._openStreamCalls.length).toBe(initialOpenStreamCount + 2);
       });
+
+      // No tts_end should have been sent (still in speaking state, resuming)
+      // The session should still be in speaking state
+      expect(ws.sentOfType("state_change").at(-1)).toEqual({
+        type: "state_change",
+        state: "speaking",
+      });
+
+      // qa_overlay_dismiss should be a no-op since nothing is awaiting
+      const clearCountBefore = ws.sentOfType("qa_board_clear").length;
+      ws.receiveJSON({ type: "qa_overlay_dismiss" });
+      expect(ws.sentOfType("qa_board_clear").length).toBe(clearCountBefore);
+    });
+  });
+
+  // ── Board fallback ──
+
+  describe("board drawing fallback", () => {
+    it("triggers fallback when speech implies drawing but no marker present", async () => {
+      ws.receiveJSON({ type: "start_listening" });
+
+      // LLM responds with drawing intent but no ---BOARD--- marker
+      (mockLLM.streamSpeechResponse as ReturnType<typeof vi.fn>).mockImplementationOnce(function (
+        this: MockLLM,
+        _transcript: string,
+        _history: unknown,
+        callbacks: LLMStreamCallbacks,
+      ) {
+        this._streamCb = callbacks;
+        queueMicrotask(() => {
+          const text = "Sana bir üçgen çizeyim, bak tahtada görebilirsin.";
+          callbacks.onToken(text, text);
+          callbacks.onDone(text);
+        });
+        return { abort: this._abortFn };
+      });
+
+      mockSTT._startCb!.onTranscript("bir üçgen çiz", true);
+      await vi.waitFor(() => expect(mockTTS.openStream).toHaveBeenCalled());
+
+      // Wait for fallback to fire
+      await vi.waitFor(() => expect(mockLLM.generateBoardOnly).toHaveBeenCalled());
+
+      // Should send qa_board_update from fallback
+      await vi.waitFor(() => {
+        expect(ws.sentOfType("qa_board_update")).toHaveLength(1);
+      });
+    });
+
+    it("triggers fallback for 'çizerek' verb form (expanded regex)", async () => {
+      ws.receiveJSON({ type: "start_listening" });
+
+      (mockLLM.streamSpeechResponse as ReturnType<typeof vi.fn>).mockImplementationOnce(function (
+        this: MockLLM,
+        _transcript: string,
+        _history: unknown,
+        callbacks: LLMStreamCallbacks,
+      ) {
+        this._streamCb = callbacks;
+        queueMicrotask(() => {
+          const text = "Young deneyinin temel prensibini tahtaya çizerek açıklıyorum.";
+          callbacks.onToken(text, text);
+          callbacks.onDone(text);
+        });
+        return { abort: this._abortFn };
+      });
+
+      mockSTT._startCb!.onTranscript("Young deneyini çizerek anlat", true);
+      await vi.waitFor(() => expect(mockTTS.openStream).toHaveBeenCalled());
+
+      await vi.waitFor(() => expect(mockLLM.generateBoardOnly).toHaveBeenCalled());
+
+      await vi.waitFor(() => {
+        expect(ws.sentOfType("qa_board_update")).toHaveLength(1);
+      });
+    });
+
+    it("does not trigger fallback when speech has no drawing intent", async () => {
+      ws.receiveJSON({ type: "start_listening" });
+
+      (mockLLM.streamSpeechResponse as ReturnType<typeof vi.fn>).mockImplementationOnce(function (
+        this: MockLLM,
+        _transcript: string,
+        _history: unknown,
+        callbacks: LLMStreamCallbacks,
+      ) {
+        this._streamCb = callbacks;
+        queueMicrotask(() => {
+          const text = "Merhaba, bugün toplama işlemini öğreneceğiz.";
+          callbacks.onToken(text, text);
+          callbacks.onDone(text);
+        });
+        return { abort: this._abortFn };
+      });
+
+      mockSTT._startCb!.onTranscript("merhaba", true);
+      await vi.waitFor(() => expect(mockTTS.openStream).toHaveBeenCalled());
+
+      // Give it a tick to ensure fallback would have fired if it was going to
+      await new Promise(r => setTimeout(r, 10));
+      expect(mockLLM.generateBoardOnly).not.toHaveBeenCalled();
+    });
+
+    it("does not trigger fallback when board marker is present", async () => {
+      ws.receiveJSON({ type: "start_listening" });
+
+      (mockLLM.streamSpeechResponse as ReturnType<typeof vi.fn>).mockImplementationOnce(function (
+        this: MockLLM,
+        _transcript: string,
+        _history: unknown,
+        callbacks: LLMStreamCallbacks,
+      ) {
+        this._streamCb = callbacks;
+        queueMicrotask(() => {
+          const text = 'Sana bir üçgen çizeyim.\n---BOARD---\n[{"type":"text","text":"üçgen"}]';
+          callbacks.onToken(text, text);
+          callbacks.onDone(text);
+        });
+        return { abort: this._abortFn };
+      });
+
+      mockSTT._startCb!.onTranscript("üçgen çiz", true);
+      await vi.waitFor(() => expect(mockTTS.openStream).toHaveBeenCalled());
+
+      // Board update from marker parsing
+      await vi.waitFor(() => {
+        expect(ws.sentOfType("qa_board_update")).toHaveLength(1);
+      });
+
+      // Fallback should NOT be called since marker was present
+      expect(mockLLM.generateBoardOnly).not.toHaveBeenCalled();
+    });
+
+    it("swallows fallback errors without crashing", async () => {
+      ws.receiveJSON({ type: "start_listening" });
+
+      (mockLLM.streamSpeechResponse as ReturnType<typeof vi.fn>).mockImplementationOnce(function (
+        this: MockLLM,
+        _transcript: string,
+        _history: unknown,
+        callbacks: LLMStreamCallbacks,
+      ) {
+        this._streamCb = callbacks;
+        queueMicrotask(() => {
+          const text = "Sana bir daire çizeyim.";
+          callbacks.onToken(text, text);
+          callbacks.onDone(text);
+        });
+        return { abort: this._abortFn };
+      });
+
+      (mockLLM.generateBoardOnly as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("API error"));
+
+      mockSTT._startCb!.onTranscript("daire çiz", true);
+      await vi.waitFor(() => expect(mockTTS.openStream).toHaveBeenCalled());
+
+      await vi.waitFor(() => expect(mockLLM.generateBoardOnly).toHaveBeenCalled());
+
+      // No qa_board_update (fallback failed), no crash
+      await new Promise(r => setTimeout(r, 10));
+      expect(ws.sentOfType("qa_board_update")).toHaveLength(0);
+      expect(ws.sentOfType("error")).toHaveLength(0);
+    });
+  });
+
+  // ── Lesson resume timeout ──
+
+  describe("lesson resume timeout", () => {
+    const lessonItems = [
+      { type: "heading", text: "Test Lesson", speech: "" },
+      { type: "text", text: "Item 1", speech: "Speech for item one." },
+      { type: "text", text: "Item 2", speech: "Speech for item two." },
+      { type: "text", text: "Item 3", speech: "Speech for item three." },
+    ];
+
+    async function startLesson() {
+      (mockLLM.generateLesson as ReturnType<typeof vi.fn>).mockResolvedValueOnce(lessonItems);
+      ws.receiveJSON({ type: "generate_lesson", topic: "test" });
+      await vi.waitFor(() => expect(mockTTS.openStream).toHaveBeenCalled());
+    }
+
+    it("auto-resumes lesson after barge-in when no transcript arrives (timeout)", async () => {
+      await startLesson();
+      const initialOpenStreamCount = mockTTS._openStreamCalls.length;
+
+      // Barge-in during lesson (noise / false positive)
+      ws.receiveJSON({ type: "barge_in" });
+
+      expect(ws.sentOfType("state_change").at(-1)).toEqual({
+        type: "state_change",
+        state: "listening",
+      });
+
+      // In test mode lessonResumeTimeoutMs=0, so timeout fires immediately on next tick
+      await vi.waitFor(() => {
+        expect(mockTTS._openStreamCalls.length).toBe(initialOpenStreamCount + 1);
+      });
+
+      // Should have sent tts_start before resuming
+      expect(ws.sentOfType("tts_start").length).toBeGreaterThanOrEqual(1);
+
+      // STT should have been stopped
+      expect(mockSTT.stop).toHaveBeenCalled();
+    });
+
+    it("cancels timeout when a real transcript arrives", async () => {
+      await startLesson();
+      const initialOpenStreamCount = mockTTS._openStreamCalls.length;
+
+      // Barge-in during lesson
+      ws.receiveJSON({ type: "barge_in" });
+
+      // User speaks a real question before timeout fires
+      mockSTT._startCb!.onTranscript("Bu ne demek?", true);
+
+      // LLM Q&A stream should open (not the timeout auto-resume)
+      await vi.waitFor(() => {
+        expect(mockTTS._openStreamCalls.length).toBe(initialOpenStreamCount + 1);
+      });
+
+      // The Q&A LLM should have been called, not a direct resume
+      expect(mockLLM.streamSpeechResponse).toHaveBeenCalled();
+    });
+
+    it("auto-resumes lesson after Q&A overlay dismiss timeout", async () => {
+      await startLesson();
+      const initialOpenStreamCount = mockTTS._openStreamCalls.length;
+
+      // Barge-in during lesson
+      ws.receiveJSON({ type: "barge_in" });
+
+      // Q&A with board marker
+      (mockLLM.streamSpeechResponse as ReturnType<typeof vi.fn>).mockImplementationOnce(function (
+        this: MockLLM,
+        _transcript: string,
+        _history: unknown,
+        callbacks: LLMStreamCallbacks,
+      ) {
+        this._streamCb = callbacks;
+        queueMicrotask(() => {
+          const text = 'Evet. \n---BOARD---\n[{"type":"text","text":"açıklama"}]';
+          callbacks.onToken("Evet. ", "Evet. ");
+          callbacks.onDone(text);
+        });
+        return { abort: this._abortFn };
+      });
+
+      mockSTT._startCb!.onTranscript("Bu ne?", true);
+      await vi.waitFor(() => expect(mockTTS.openStream).toHaveBeenCalledTimes(initialOpenStreamCount + 1));
+
+      // Q&A TTS ends → awaiting overlay dismiss
+      const qaStreamCb = mockTTS._openStreamCalls[initialOpenStreamCount];
+      qaStreamCb.onEnd();
+
+      // In test mode timeout=0, so auto-resume fires immediately
+      await vi.waitFor(() => {
+        expect(mockTTS._openStreamCalls.length).toBe(initialOpenStreamCount + 2);
+      });
+
+      // qa_board_clear should have been sent by the timeout
+      expect(ws.sentOfType("qa_board_clear").length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  // ── Drawing coordinate normalization ──
+
+  describe("drawing coordinate normalization", () => {
+    it("normalizes out-of-viewport polyline coordinates in Q&A board", async () => {
+      ws.receiveJSON({ type: "start_listening" });
+
+      // Pro model returns drawing with out-of-viewport coordinates
+      const proDrawing = {
+        type: "drawing",
+        steps: [{
+          shapes: [{
+            type: "polyline",
+            points: [[0, 0], [500, 0], [500, 400], [0, 400]] as [number, number][],
+            stroke: "#000",
+          }],
+          speech: "A wave",
+        }],
+      };
+      (mockLLM.generateBoardOnly as ReturnType<typeof vi.fn>).mockResolvedValueOnce([proDrawing]);
+
+      // LLM responds with board containing out-of-viewport polyline (inline)
+      (mockLLM.streamSpeechResponse as ReturnType<typeof vi.fn>).mockImplementationOnce(function (
+        this: MockLLM,
+        _transcript: string,
+        _history: unknown,
+        callbacks: LLMStreamCallbacks,
+      ) {
+        this._streamCb = callbacks;
+        queueMicrotask(() => {
+          const boardJson = JSON.stringify([{
+            type: "drawing",
+            steps: [{
+              shapes: [{
+                type: "polyline",
+                points: [[0, 0], [500, 0], [500, 400], [0, 400]],
+                stroke: "#000",
+              }],
+              speech: "A wave",
+            }],
+          }]);
+          const text = `Bak çiziyorum.\n---BOARD---\n${boardJson}`;
+          callbacks.onToken("Bak çiziyorum. ", "Bak çiziyorum. ");
+          callbacks.onDone(text);
+        });
+        return { abort: this._abortFn };
+      });
+
+      mockSTT._startCb!.onTranscript("bir dalga çiz", true);
+      await vi.waitFor(() => expect(mockTTS.openStream).toHaveBeenCalled());
+
+      // Wait for pro model board update (inline drawings are deferred to pro model)
+      await vi.waitFor(() => {
+        const updates = ws.sentOfType("qa_board_update");
+        expect(updates.some((u: { items: Array<{ type: string }> }) => u.items.some(i => i.type === "drawing"))).toBe(true);
+      });
+
+      const updates = ws.sentOfType("qa_board_update");
+      const boardUpdate = updates.find((u: { items: Array<{ type: string }> }) => u.items.some(i => i.type === "drawing"))!;
+      const drawing = boardUpdate.items.find((i: { type: string }) => i.type === "drawing");
+      expect(drawing.type).toBe("drawing");
+
+      // All points should be within viewport (0-400 x 0-300)
+      for (const step of drawing.steps) {
+        for (const shape of step.shapes) {
+          if (shape.type === "polyline") {
+            for (const [x, y] of shape.points) {
+              expect(x).toBeGreaterThanOrEqual(0);
+              expect(x).toBeLessThanOrEqual(400);
+              expect(y).toBeGreaterThanOrEqual(0);
+              expect(y).toBeLessThanOrEqual(300);
+            }
+          }
+        }
+      }
+    });
+
+    it("does not modify coordinates already within viewport", async () => {
+      ws.receiveJSON({ type: "start_listening" });
+
+      const originalPoints: [number, number][] = [[50, 50], [200, 100], [350, 250]];
+
+      // Pro model returns drawing with in-viewport coordinates
+      const proDrawing = {
+        type: "drawing",
+        steps: [{
+          shapes: [{
+            type: "polyline",
+            points: [...originalPoints.map(p => [...p])] as [number, number][],
+            stroke: "#000",
+          }],
+          speech: "A line",
+        }],
+      };
+      (mockLLM.generateBoardOnly as ReturnType<typeof vi.fn>).mockResolvedValueOnce([proDrawing]);
+
+      (mockLLM.streamSpeechResponse as ReturnType<typeof vi.fn>).mockImplementationOnce(function (
+        this: MockLLM,
+        _transcript: string,
+        _history: unknown,
+        callbacks: LLMStreamCallbacks,
+      ) {
+        this._streamCb = callbacks;
+        queueMicrotask(() => {
+          const boardJson = JSON.stringify([{
+            type: "drawing",
+            steps: [{
+              shapes: [{
+                type: "polyline",
+                points: originalPoints,
+                stroke: "#000",
+              }],
+              speech: "A line",
+            }],
+          }]);
+          const text = `Bak çiziyorum.\n---BOARD---\n${boardJson}`;
+          callbacks.onToken("Bak çiziyorum. ", "Bak çiziyorum. ");
+          callbacks.onDone(text);
+        });
+        return { abort: this._abortFn };
+      });
+
+      mockSTT._startCb!.onTranscript("bir çizgi çiz", true);
+      await vi.waitFor(() => expect(mockTTS.openStream).toHaveBeenCalled());
+
+      // Wait for pro model board update
+      await vi.waitFor(() => {
+        const updates = ws.sentOfType("qa_board_update");
+        expect(updates.some((u: { items: Array<{ type: string }> }) => u.items.some(i => i.type === "drawing"))).toBe(true);
+      });
+
+      const updates = ws.sentOfType("qa_board_update");
+      const boardUpdate = updates.find((u: { items: Array<{ type: string }> }) => u.items.some(i => i.type === "drawing"))!;
+      const drawing = boardUpdate.items.find((i: { type: string }) => i.type === "drawing");
+      const points = drawing.steps[0].shapes[0].points;
+
+      // Points should remain unchanged since they were already within viewport
+      expect(points[0]).toEqual([50, 50]);
+      expect(points[1]).toEqual([200, 100]);
+      expect(points[2]).toEqual([350, 250]);
     });
   });
 

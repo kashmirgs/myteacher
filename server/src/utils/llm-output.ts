@@ -23,6 +23,24 @@ export function stripLLMJson(raw: string): string {
   return s.trim();
 }
 
+/**
+ * Attempt JSON.parse with fallback fixups for common LLM quirks:
+ * - Single-quoted strings
+ * - Unquoted property names
+ */
+export function parseLLMJson(raw: string): unknown {
+  const cleaned = stripLLMJson(raw);
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    // Fix single-quoted strings and unquoted property names
+    const fixed = cleaned
+      .replace(/'/g, '"')
+      .replace(/(\{|,)\s*([a-zA-Z_]\w*)\s*:/g, '$1"$2":');
+    return JSON.parse(fixed);
+  }
+}
+
 export interface ValidationResult {
   valid: boolean;
   errors: string[];
