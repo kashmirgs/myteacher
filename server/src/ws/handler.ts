@@ -44,6 +44,18 @@ function extractClause(buffer: string): { clause: string; remaining: string } | 
 }
 
 /** Silent PCM pause injected between speeches (s16le, 24kHz, mono) */
+const RESUME_DELAY_MS = process.env.NODE_ENV === "test" ? 0 : 3000;
+
+const TRANSITION_PHRASES = [
+  "Peki, nerede kalmıştık... ",
+  "Şimdi derse devam edelim. ",
+  "Tamam, devam ediyorum. ",
+  "Pekii, derse dönelim. ",
+  "Hadi bakalım, devam edelim. ",
+  "Güzel, kaldığımız yerden devam. ",
+  "Devam ediyoruz. ",
+];
+
 const PAUSE_MS = process.env.NODE_ENV === "test" ? 0 : 400;
 const PAUSE_SEC = PAUSE_MS / 1000;
 const SILENCE_SAMPLES = Math.ceil(24000 * PAUSE_MS / 1000); // 9600
@@ -238,6 +250,7 @@ export function handleConnection(ws: WebSocket): void {
   let lastRevealedIdx = 0;
   let lastQAResponseLength = 0;
   let awaitingOverlayDismiss = false;
+  let lastTransitionIdx = -1;
 
   // Lesson resume timeout – auto-resumes lesson if STT produces no transcript
   // (e.g. noise-triggered barge-in) or overlay is not dismissed within timeout.
@@ -359,9 +372,21 @@ export function handleConnection(ws: WebSocket): void {
             pendingAudio.length = 0;
             startLessonResumeTimer();
           } else {
-            // No board sent — resume lesson directly without waiting for overlay dismiss
-            console.log(`[handler] Q&A TTS ended, no board sent, resuming lesson directly from idx ${lastRevealedIdx + 1}`);
-            resumeLesson(lastRevealedIdx + 1);
+            // No board sent — delay then resume lesson
+            console.log(`[handler] Q&A TTS ended, no board sent, will resume lesson from idx ${lastRevealedIdx + 1} after ${RESUME_DELAY_MS}ms`);
+            send({ type: "tts_end" });
+            session.transition("listening");
+            suppressTranscriptsUntil = performance.now() + ttsEndSuppressMs;
+            scheduleSTTStart(ttsEndSTTDelayMs);
+            pendingAudio.length = 0;
+            const resumeGen = llmGeneration;
+            setTimeout(() => {
+              if (resumeGen !== llmGeneration) return;
+              if (!session.transition("processing")) return;
+              if (!session.transition("speaking")) return;
+              send({ type: "state_change", state: "speaking" });
+              resumeLesson(lastRevealedIdx + 1);
+            }, RESUME_DELAY_MS);
           }
           return;
         }
@@ -610,7 +635,17 @@ export function handleConnection(ws: WebSocket): void {
     // Feeding separately can cause Cartesia to end the stream early, so we
     // prepend to the first speech text instead.
     const isTest = process.env.NODE_ENV === "test";
-    const transitionPrefix = isTest ? "" : lastQAResponseLength > 150 ? "Şimdi derse devam edelim. " : ". ";
+    let transitionPrefix: string;
+    if (isTest) {
+      transitionPrefix = "";
+    } else if (lastQAResponseLength > 150) {
+      let idx = Math.floor(Math.random() * TRANSITION_PHRASES.length);
+      if (idx === lastTransitionIdx) idx = (idx + 1) % TRANSITION_PHRASES.length;
+      lastTransitionIdx = idx;
+      transitionPrefix = TRANSITION_PHRASES[idx];
+    } else {
+      transitionPrefix = "Peki. ";
+    }
     lastQAResponseLength = 0;
 
     // Pre-compute non-space character boundaries for remaining speeches
@@ -1208,11 +1243,15 @@ export function handleConnection(ws: WebSocket): void {
         awaitingOverlayDismiss = false;
         send({ type: "qa_board_clear" });
         if (isLessonNarrating) {
-          // Resume lesson narration
-          if (!session.transition("processing")) break;
-          if (!session.transition("speaking")) break;
-          send({ type: "state_change", state: "speaking" });
-          resumeLesson(lastRevealedIdx + 1);
+          // Delay then resume lesson narration
+          const resumeGen = llmGeneration;
+          setTimeout(() => {
+            if (resumeGen !== llmGeneration) return;
+            if (!session.transition("processing")) return;
+            if (!session.transition("speaking")) return;
+            send({ type: "state_change", state: "speaking" });
+            resumeLesson(lastRevealedIdx + 1);
+          }, RESUME_DELAY_MS);
         }
         break;
       }
