@@ -129,6 +129,7 @@ export function createGeminiLLMService(): LLMService {
     },
 
     async generateBoardOnly(speechText: string, history: ConversationHistory): Promise<BoardItem[]> {
+      const t0 = performance.now();
       console.log(`[llm:gemini] generateBoardOnly for: "${speechText.slice(0, 60)}..."`);
 
       const contents = [
@@ -137,16 +138,18 @@ export function createGeminiLLMService(): LLMService {
       ];
 
       const response = await ai.models.generateContent({
-        model: "gemini-3.1-pro-preview",
+        model: "gemini-3-flash-preview",
         contents,
         config: {
           systemInstruction: BOARD_ONLY_SYSTEM_PROMPT,
-          maxOutputTokens: 2048,
+          maxOutputTokens: 4096,
         },
       });
       const text = response.text ?? "";
       const items = parseLLMJson(text);
       if (!Array.isArray(items)) throw new Error("Expected JSON array");
+      const elapsed = (performance.now() - t0).toFixed(0);
+      console.log(`[llm:gemini] generateBoardOnly done in ${elapsed}ms (${items.length} items)`);
       return items as BoardItem[];
     },
   };

@@ -502,6 +502,7 @@ function createClaudeLLMService(): LLMService {
     },
 
     async generateBoardOnly(speechText: string, history: ConversationHistory): Promise<BoardItem[]> {
+      const t0 = performance.now();
       console.log(`[llm:claude] generateBoardOnly for: "${speechText.slice(0, 60)}..."`);
 
       const messages = [
@@ -519,6 +520,8 @@ function createClaudeLLMService(): LLMService {
       if (block.type !== "text") throw new Error("Unexpected response type");
       const items = parseLLMJson(block.text);
       if (!Array.isArray(items)) throw new Error("Expected JSON array");
+      const elapsed = (performance.now() - t0).toFixed(0);
+      console.log(`[llm:claude] generateBoardOnly done in ${elapsed}ms (${items.length} items)`);
       return items as BoardItem[];
     },
   };

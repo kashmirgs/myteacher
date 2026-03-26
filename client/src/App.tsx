@@ -165,7 +165,7 @@ export function App() {
       console.log("[barge-in] speech detected during TTS playback, stopping audio");
       lastBargeInAtRef.current = performance.now();
       audioPlayer.stop();
-      suppressAudio(150);
+      suppressAudio(50);
       console.log("[barge-in] sending message to server");
       send({ type: "barge_in" });
     }

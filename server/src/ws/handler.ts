@@ -255,7 +255,7 @@ export function handleConnection(ws: WebSocket): void {
   // Lesson resume timeout – auto-resumes lesson if STT produces no transcript
   // (e.g. noise-triggered barge-in) or overlay is not dismissed within timeout.
   let lessonResumeTimer: NodeJS.Timeout | null = null;
-  const lessonResumeTimeoutMs = process.env.NODE_ENV === "test" ? 0 : 8000;
+  const lessonResumeTimeoutMs = process.env.NODE_ENV === "test" ? 0 : 10000;
 
   function startLessonResumeTimer() {
     clearLessonResumeTimer();
@@ -339,6 +339,24 @@ export function handleConnection(ws: WebSocket): void {
     let boardMarkerDetected = false;
     let fedLength = 0;
     let qaBoardSent = false;
+    let boardPendingPromise: Promise<void> | null = null;
+
+    // Speculatively start board generation if user's question implies drawing
+    if (speechImpliesDrawing(text) && llm.generateBoardOnly) {
+      const enrichedPrompt = `Konuşma metni: ${text}\n\nBu konuyu detaylı ve anlaşılır bir çizimle tahtada göster. Birden fazla adım (step) kullan.`;
+      boardPendingPromise = llm.generateBoardOnly(enrichedPrompt, history)
+        .then(items => {
+          if (gen === llmGeneration && items.length > 0 && !qaBoardSent) {
+            normalizeDrawingCoords(items);
+            send({ type: "qa_board_update", items });
+            qaBoardSent = true;
+          }
+        })
+        .catch(err => {
+          console.warn("[handler] speculative board failed:", err);
+          boardPendingPromise = null;
+        });
+    }
 
     // Pre-open Cartesia WS immediately (in parallel with LLM streaming)
     const ttsHandle = tts.openStream({
@@ -361,41 +379,55 @@ export function handleConnection(ws: WebSocket): void {
       // resumeLesson(). For free chat, dismiss just clears the overlay.
       onEnd: () => {
         if (session.getState() !== "speaking") return;
-        if (isLessonNarrating) {
-          if (qaBoardSent) {
-            console.log(`[handler] Q&A TTS ended, waiting for overlay dismiss before resuming lesson from idx ${lastRevealedIdx + 1}`);
-            awaitingOverlayDismiss = true;
-            send({ type: "tts_end" });
-            session.transition("listening");
-            suppressTranscriptsUntil = performance.now() + ttsEndSuppressMs;
-            scheduleSTTStart(ttsEndSTTDelayMs);
-            pendingAudio.length = 0;
-            startLessonResumeTimer();
-          } else {
-            // No board sent — delay then resume lesson
-            console.log(`[handler] Q&A TTS ended, no board sent, will resume lesson from idx ${lastRevealedIdx + 1} after ${RESUME_DELAY_MS}ms`);
-            send({ type: "tts_end" });
-            session.transition("listening");
-            suppressTranscriptsUntil = performance.now() + ttsEndSuppressMs;
-            scheduleSTTStart(ttsEndSTTDelayMs);
-            pendingAudio.length = 0;
-            const resumeGen = llmGeneration;
-            setTimeout(() => {
-              if (resumeGen !== llmGeneration) return;
-              if (!session.transition("processing")) return;
-              if (!session.transition("speaking")) return;
-              send({ type: "state_change", state: "speaking" });
-              resumeLesson(lastRevealedIdx + 1);
-            }, RESUME_DELAY_MS);
+
+        const proceed = () => {
+          if (isLessonNarrating) {
+            if (qaBoardSent) {
+              console.log(`[handler] Q&A TTS ended, waiting for overlay dismiss before resuming lesson from idx ${lastRevealedIdx + 1}`);
+              awaitingOverlayDismiss = true;
+              send({ type: "tts_end" });
+              session.transition("listening");
+              suppressTranscriptsUntil = performance.now() + ttsEndSuppressMs;
+              pendingAudio.length = 0;
+              scheduleSTTStart(ttsEndSTTDelayMs);
+              startLessonResumeTimer();
+            } else {
+              // No board sent — delay then resume lesson
+              console.log(`[handler] Q&A TTS ended, no board sent, will resume lesson from idx ${lastRevealedIdx + 1} after ${RESUME_DELAY_MS}ms`);
+              send({ type: "tts_end" });
+              session.transition("listening");
+              suppressTranscriptsUntil = performance.now() + ttsEndSuppressMs;
+              pendingAudio.length = 0;
+              scheduleSTTStart(ttsEndSTTDelayMs);
+              const resumeGen = llmGeneration;
+              setTimeout(() => {
+                if (resumeGen !== llmGeneration) return;
+                if (!session.transition("processing")) return;
+                if (!session.transition("speaking")) return;
+                send({ type: "state_change", state: "speaking" });
+                resumeLesson(lastRevealedIdx + 1);
+              }, RESUME_DELAY_MS);
+            }
+            return;
           }
-          return;
+          awaitingOverlayDismiss = true;
+          send({ type: "tts_end" });
+          session.transition("listening");
+          suppressTranscriptsUntil = performance.now() + ttsEndSuppressMs;
+          pendingAudio.length = 0; // Discard echo-contaminated audio
+          scheduleSTTStart(ttsEndSTTDelayMs);
+        };
+
+        if (boardPendingPromise) {
+          // Board generation in-flight — wait for it before deciding
+          boardPendingPromise.finally(() => {
+            if (gen !== llmGeneration) return;
+            if (session.getState() !== "speaking") return;
+            proceed();
+          });
+        } else {
+          proceed();
         }
-        awaitingOverlayDismiss = true;
-        send({ type: "tts_end" });
-        session.transition("listening");
-        suppressTranscriptsUntil = performance.now() + ttsEndSuppressMs;
-        scheduleSTTStart(ttsEndSTTDelayMs);
-        pendingAudio.length = 0; // Discard echo-contaminated audio
       },
     });
 
@@ -435,6 +467,23 @@ export function handleConnection(ws: WebSocket): void {
 
         // Send partial transcript to client
         send({ type: "transcript", text: snapshot, isFinal: false });
+
+        // Early drawing detection in streaming text — start board generation speculatively
+        if (!boardPendingPromise && !boardMarkerDetected && speechImpliesDrawing(snapshot) && llm.generateBoardOnly) {
+          const enrichedPrompt = `Konuşma metni: ${snapshot}\n\nBu konuyu detaylı ve anlaşılır bir çizimle tahtada göster. Birden fazla adım (step) kullan.`;
+          boardPendingPromise = llm.generateBoardOnly(enrichedPrompt, history)
+            .then(items => {
+              if (gen === llmGeneration && items.length > 0 && !qaBoardSent) {
+                normalizeDrawingCoords(items);
+                send({ type: "qa_board_update", items });
+                qaBoardSent = true;
+              }
+            })
+            .catch(err => {
+              console.warn("[handler] speculative board (stream) failed:", err);
+              boardPendingPromise = null;
+            });
+        }
 
         // Check for clause boundaries
         let extracted = extractClause(buffer);
@@ -496,48 +545,55 @@ export function handleConnection(ws: WebSocket): void {
         const hasDrawing = inlineParsedItems.some(i => i.type === "drawing");
 
         if (hasDrawing && llm.generateBoardOnly) {
-          // Drawing var → non-drawing itemleri hemen gönder, drawing için pro model bekle
-          const nonDrawingItems = inlineParsedItems.filter(i => i.type !== "drawing");
-          if (nonDrawingItems.length > 0) {
-            normalizeDrawingCoords(nonDrawingItems);
-            send({ type: "qa_board_update", items: nonDrawingItems });
-            qaBoardSent = true;
+          if (!boardPendingPromise) {
+            // Spekülatif çağrı yapılmamış — nonDrawing gönder + pro model başlat
+            const nonDrawingItems = inlineParsedItems.filter(i => i.type !== "drawing");
+            if (nonDrawingItems.length > 0) {
+              normalizeDrawingCoords(nonDrawingItems);
+              send({ type: "qa_board_update", items: nonDrawingItems });
+              qaBoardSent = true;
+            }
+            // Pro model ile drawing üret
+            const enrichedPrompt = `Konuşma metni: ${speechText}\n\nBu konuyu detaylı ve anlaşılır bir çizimle tahtada göster. Birden fazla adım (step) kullan.`;
+            boardPendingPromise = llm.generateBoardOnly(enrichedPrompt, history)
+              .then(proItems => {
+                if (gen !== llmGeneration || proItems.length === 0) return;
+                const proDrawings = proItems.filter(i => i.type === "drawing");
+                const merged = [...nonDrawingItems, ...(proDrawings.length > 0 ? proDrawings : proItems)];
+                normalizeDrawingCoords(merged);
+                send({ type: "qa_board_update", items: merged });
+                qaBoardSent = true;
+              })
+              .catch(err => {
+                console.warn("[handler] pro board generation failed, falling back to inline:", err);
+                boardPendingPromise = null;
+                // Fallback: inline drawing'i gönder (kötü kalite ama hiç yoktan iyi)
+                normalizeDrawingCoords(inlineParsedItems);
+                send({ type: "qa_board_update", items: inlineParsedItems });
+                qaBoardSent = true;
+              });
           }
-          // Pro model ile drawing üret
-          const enrichedPrompt = `Konuşma metni: ${speechText}\n\nBu konuyu detaylı ve anlaşılır bir çizimle tahtada göster. Birden fazla adım (step) kullan.`;
-          llm.generateBoardOnly(enrichedPrompt, history)
-            .then(proItems => {
-              if (gen !== llmGeneration || proItems.length === 0) return;
-              const proDrawings = proItems.filter(i => i.type === "drawing");
-              const merged = [...nonDrawingItems, ...(proDrawings.length > 0 ? proDrawings : proItems)];
-              normalizeDrawingCoords(merged);
-              send({ type: "qa_board_update", items: merged });
-              qaBoardSent = true;
-            })
-            .catch(err => {
-              console.warn("[handler] pro board generation failed, falling back to inline:", err);
-              // Fallback: inline drawing'i gönder (kötü kalite ama hiç yoktan iyi)
-              normalizeDrawingCoords(inlineParsedItems);
-              send({ type: "qa_board_update", items: inlineParsedItems });
-              qaBoardSent = true;
-            });
+          // else: spekülatif çağrı zaten çalışıyor — onEnd onu bekleyecek
         } else if (inlineParsedItems.length > 0) {
           // Drawing yok → inline board'u olduğu gibi gönder
           normalizeDrawingCoords(inlineParsedItems);
           send({ type: "qa_board_update", items: inlineParsedItems });
           qaBoardSent = true;
         } else if (speechImpliesDrawing(speechText) && llm.generateBoardOnly) {
-          // Board yok ama speech drawing imply ediyor → pro model ile üret
-          const enrichedPrompt = `Konuşma metni: ${speechText}\n\nBu konuyu detaylı ve anlaşılır bir çizimle tahtada göster. Birden fazla adım (step) kullan.`;
-          llm.generateBoardOnly(enrichedPrompt, history)
-            .then(items => {
-              if (gen === llmGeneration && items.length > 0) {
-                normalizeDrawingCoords(items);
-                send({ type: "qa_board_update", items });
-                qaBoardSent = true;
-              }
-            })
-            .catch(err => console.warn("[handler] fallback board failed:", err));
+          if (!boardPendingPromise) {
+            // No speculative call was made — start now
+            const enrichedPrompt = `Konuşma metni: ${speechText}\n\nBu konuyu detaylı ve anlaşılır bir çizimle tahtada göster. Birden fazla adım (step) kullan.`;
+            boardPendingPromise = llm.generateBoardOnly(enrichedPrompt, history)
+              .then(items => {
+                if (gen === llmGeneration && items.length > 0 && !qaBoardSent) {
+                  normalizeDrawingCoords(items);
+                  send({ type: "qa_board_update", items });
+                  qaBoardSent = true;
+                }
+              })
+              .catch(err => console.warn("[handler] fallback board failed:", err));
+          }
+          // else: speculative call already in flight — onEnd will await it
         }
 
         currentLLMHandle = null;
@@ -563,6 +619,8 @@ export function handleConnection(ws: WebSocket): void {
   function startSTT() {
     if (sttActive) return;
     sttActive = true;
+    // Drain buffered audio to feed into new STT connection
+    const buffered = pendingAudio.splice(0);
     const gen = ++sttGeneration;
     stt.start({
       onTranscript: (text, isFinal) => {
@@ -579,6 +637,10 @@ export function handleConnection(ws: WebSocket): void {
         }
       },
     });
+    // Feed buffered audio (goes to Deepgram pendingChunks until connection opens)
+    for (const chunk of buffered) {
+      stt.feedAudio(chunk);
+    }
   }
 
   function stopSTT() {
@@ -616,8 +678,8 @@ export function handleConnection(ws: WebSocket): void {
       isLessonNarrating = false;
       session.transition("listening");
       suppressTranscriptsUntil = performance.now() + ttsEndSuppressMs;
-      scheduleSTTStart(ttsEndSTTDelayMs);
       pendingAudio.length = 0;
+      scheduleSTTStart(ttsEndSTTDelayMs);
       return;
     }
 
@@ -788,8 +850,8 @@ export function handleConnection(ws: WebSocket): void {
           send({ type: "tts_end" });
           session.transition("listening");
           suppressTranscriptsUntil = performance.now() + ttsEndSuppressMs;
-          scheduleSTTStart(ttsEndSTTDelayMs);
           pendingAudio.length = 0;
+          scheduleSTTStart(ttsEndSTTDelayMs);
           return;
         }
 
@@ -816,8 +878,8 @@ export function handleConnection(ws: WebSocket): void {
           send({ type: "tts_end" });
           session.transition("listening");
           suppressTranscriptsUntil = performance.now() + ttsEndSuppressMs;
-          scheduleSTTStart(ttsEndSTTDelayMs);
           pendingAudio.length = 0;
+          scheduleSTTStart(ttsEndSTTDelayMs);
         }, remainingSec * 1000);
         revealTimers.push(endTimer);
       },
@@ -1005,8 +1067,8 @@ export function handleConnection(ws: WebSocket): void {
           send({ type: "tts_end" });
           session.transition("listening");
           suppressTranscriptsUntil = performance.now() + ttsEndSuppressMs;
-          scheduleSTTStart(ttsEndSTTDelayMs);
           pendingAudio.length = 0;
+          scheduleSTTStart(ttsEndSTTDelayMs);
           return;
         }
 
@@ -1031,8 +1093,8 @@ export function handleConnection(ws: WebSocket): void {
           send({ type: "tts_end" });
           session.transition("listening");
           suppressTranscriptsUntil = performance.now() + ttsEndSuppressMs;
-          scheduleSTTStart(ttsEndSTTDelayMs);
           pendingAudio.length = 0;
+          scheduleSTTStart(ttsEndSTTDelayMs);
         }, remainingSec * 1000);
         revealTimers.push(endTimer);
       },
@@ -1076,7 +1138,12 @@ export function handleConnection(ws: WebSocket): void {
       const buffer = Buffer.isBuffer(raw) ? raw : Buffer.from(raw as ArrayBuffer);
       const state = session.getState();
       if (state === "listening") {
-        stt.feedAudio(buffer);
+        if (sttActive) {
+          stt.feedAudio(buffer);
+        } else {
+          // STT not yet started (barge-in restart gap) — buffer it
+          pendingAudio.push(buffer);
+        }
       } else if (state === "speaking") {
         pendingAudio.push(buffer);
       }
@@ -1176,12 +1243,18 @@ export function handleConnection(ws: WebSocket): void {
         revealTimers = [];
         if (state === "speaking") {
           stopSTT();
-          // Discard audio buffered during TTS — it contains the barge-in
-          // speech fragment which Deepgram would treat as a complete utterance.
-          // The user's fresh speech will arrive via MediaRecorder after the interrupt.
-          pendingAudio.length = 0;
+          // Keep last ~500ms of buffered audio (contains pre-VAD user speech).
+          // Browser echoCancellation:true already removed most TTS echo.
+          const BARGE_IN_KEEP_BYTES = 16000; // ~500ms of 16kHz mono s16le
+          let keepBytes = 0;
+          let keepFrom = pendingAudio.length;
+          for (let i = pendingAudio.length - 1; i >= 0; i--) {
+            keepBytes += pendingAudio[i].length;
+            if (keepBytes >= BARGE_IN_KEEP_BYTES) { keepFrom = i; break; }
+          }
+          if (keepFrom > 0) pendingAudio.splice(0, keepFrom);
           session.bargeIn(); // speaking → listening
-          scheduleSTTStart();
+          scheduleSTTStart(0); // Start immediately — audio buffered until connection opens
           if (isLessonNarrating) startLessonResumeTimer();
         } else if (state === "processing") {
           if (session.transition("idle") && session.transition("listening")) {
@@ -1243,15 +1316,10 @@ export function handleConnection(ws: WebSocket): void {
         awaitingOverlayDismiss = false;
         send({ type: "qa_board_clear" });
         if (isLessonNarrating) {
-          // Delay then resume lesson narration
-          const resumeGen = llmGeneration;
-          setTimeout(() => {
-            if (resumeGen !== llmGeneration) return;
-            if (!session.transition("processing")) return;
-            if (!session.transition("speaking")) return;
-            send({ type: "state_change", state: "speaking" });
-            resumeLesson(lastRevealedIdx + 1);
-          }, RESUME_DELAY_MS);
+          if (!session.transition("processing")) break;
+          if (!session.transition("speaking")) break;
+          send({ type: "state_change", state: "speaking" });
+          resumeLesson(lastRevealedIdx + 1);
         }
         break;
       }

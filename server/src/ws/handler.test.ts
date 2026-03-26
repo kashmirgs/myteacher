@@ -918,13 +918,15 @@ describe("handleConnection", () => {
       mockSTT._startCb!.onTranscript("üçgen çiz", true);
       await vi.waitFor(() => expect(mockTTS.openStream).toHaveBeenCalled());
 
-      // Board update from marker parsing
+      // Speculative board may fire from user input ("üçgen çiz" matches drawing pattern),
+      // but inline board from marker should also be sent. Both are valid qa_board_update messages.
       await vi.waitFor(() => {
-        expect(ws.sentOfType("qa_board_update")).toHaveLength(1);
+        const boardUpdates = ws.sentOfType("qa_board_update");
+        expect(boardUpdates.length).toBeGreaterThanOrEqual(1);
+        // The last board update should contain the inline board items from the marker
+        const lastUpdate = boardUpdates[boardUpdates.length - 1] as { items: unknown[] };
+        expect(lastUpdate.items).toEqual([{ type: "text", text: "üçgen" }]);
       });
-
-      // Fallback should NOT be called since marker was present
-      expect(mockLLM.generateBoardOnly).not.toHaveBeenCalled();
     });
 
     it("swallows fallback errors without crashing", async () => {

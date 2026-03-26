@@ -6,6 +6,8 @@ import { KNOWN_BOARD_TYPES } from '@myteacher/shared';
  * - Markdown code fences (```json ... ```)
  * - BOM characters
  * - Trailing commas before ] or }
+ * - JS-style comments
+ * - Text before/after the JSON array/object
  */
 export function stripLLMJson(raw: string): string {
   let s = raw.trim();
@@ -17,6 +19,18 @@ export function stripLLMJson(raw: string): string {
   s = s.replace(/^```(?:json)?\s*\n?/i, '');
   s = s.replace(/\n?```\s*$/i, '');
 
+  // Remove single-line comments (// ...) outside of strings
+  s = s.replace(/(?<=^|[^:"])\/\/.*$/gm, '');
+
+  // Remove multi-line comments
+  s = s.replace(/\/\*[\s\S]*?\*\//g, '');
+
+  // Extract just the JSON array/object — LLM may add text before/after
+  const firstBracket = s.search(/[\[{]/);
+  if (firstBracket > 0) s = s.slice(firstBracket);
+  const lastBracket = Math.max(s.lastIndexOf(']'), s.lastIndexOf('}'));
+  if (lastBracket > 0) s = s.slice(0, lastBracket + 1);
+
   // Remove trailing commas before ] or }
   s = s.replace(/,\s*([}\]])/g, '$1');
 
@@ -24,20 +38,119 @@ export function stripLLMJson(raw: string): string {
 }
 
 /**
+ * Fix unescaped control characters inside JSON string values.
+ * Walks the string respecting escape sequences.
+ */
+function fixControlCharsInStrings(json: string): string {
+  const out: string[] = [];
+  let i = 0;
+  while (i < json.length) {
+    if (json[i] === '"') {
+      // Start of a JSON string — copy until closing quote
+      out.push('"');
+      i++;
+      while (i < json.length) {
+        const ch = json[i];
+        if (ch === '\\') {
+          out.push(ch, json[i + 1] ?? '');
+          i += 2;
+          continue;
+        }
+        if (ch === '"') {
+          out.push('"');
+          i++;
+          break;
+        }
+        // Replace unescaped control characters
+        const code = ch.charCodeAt(0);
+        if (code < 0x20) {
+          if (ch === '\n') out.push('\\n');
+          else if (ch === '\r') out.push('\\r');
+          else if (ch === '\t') out.push('\\t');
+          else out.push(`\\u${code.toString(16).padStart(4, '0')}`);
+        } else {
+          out.push(ch);
+        }
+        i++;
+      }
+    } else {
+      out.push(json[i]);
+      i++;
+    }
+  }
+  return out.join('');
+}
+
+/**
+ * Repair truncated JSON by closing open strings, arrays and objects.
+ * Handles LLM output cut short by maxOutputTokens.
+ */
+function repairTruncatedJson(json: string): string {
+  let s = json;
+  // If we're inside an unterminated string, close it
+  let inString = false;
+  let last = 0;
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === '\\' && inString) { i++; continue; }
+    if (s[i] === '"') {
+      inString = !inString;
+      if (inString) last = i;
+    }
+  }
+  if (inString) {
+    // Truncate from the last key-value boundary or comma before the unterminated string
+    // to avoid partial values, then close brackets
+    s = s.slice(0, last);
+    // Remove trailing comma or colon left over
+    s = s.replace(/[,:\s]+$/, '');
+  }
+
+  // Close open brackets/braces
+  const stack: string[] = [];
+  let inStr = false;
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === '\\' && inStr) { i++; continue; }
+    if (s[i] === '"') { inStr = !inStr; continue; }
+    if (inStr) continue;
+    if (s[i] === '[') stack.push(']');
+    else if (s[i] === '{') stack.push('}');
+    else if (s[i] === ']' || s[i] === '}') stack.pop();
+  }
+  // Remove trailing comma before adding closers
+  s = s.replace(/,\s*$/, '');
+  while (stack.length) s += stack.pop();
+  return s;
+}
+
+/**
  * Attempt JSON.parse with fallback fixups for common LLM quirks:
  * - Single-quoted strings
  * - Unquoted property names
+ * - Unescaped control characters in strings
+ * - Truncated JSON (unterminated strings, unclosed brackets)
  */
 export function parseLLMJson(raw: string): unknown {
   const cleaned = stripLLMJson(raw);
   try {
     return JSON.parse(cleaned);
   } catch {
-    // Fix single-quoted strings and unquoted property names
-    const fixed = cleaned
-      .replace(/'/g, '"')
-      .replace(/(\{|,)\s*([a-zA-Z_]\w*)\s*:/g, '$1"$2":');
-    return JSON.parse(fixed);
+    // Fix control characters, then retry
+    const fixed1 = fixControlCharsInStrings(cleaned);
+    try {
+      return JSON.parse(fixed1);
+    } catch {
+      // Fix single-quoted strings and unquoted property names
+      const fixed2 = fixed1
+        .replace(/'/g, '"')
+        .replace(/(\{|,)\s*([a-zA-Z_]\w*)\s*:/g, '$1"$2":');
+      try {
+        return JSON.parse(fixed2);
+      } catch {
+        // Last resort: repair truncated JSON
+        const repaired = repairTruncatedJson(fixed2);
+        return JSON.parse(repaired);
+      }
+    }
   }
 }
 
