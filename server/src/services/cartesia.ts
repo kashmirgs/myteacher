@@ -72,6 +72,7 @@ export function createTTSService(): TTSService {
           voice: {
             mode: 'id',
             id: VOICE_ID,
+            __experimental_controls: { speed: 'slow' },
           },
           output_format: {
             container: 'raw',
@@ -164,7 +165,7 @@ export function createTTSService(): TTSService {
         const request = {
           model_id: MODEL_ID,
           transcript: text,
-          voice: { mode: 'id', id: VOICE_ID },
+          voice: { mode: 'id', id: VOICE_ID, __experimental_controls: { speed: 'slow' } },
           output_format: { container: 'raw', encoding: 'pcm_s16le', sample_rate: 24000 },
           context_id: contextId,
           language: 'tr',
