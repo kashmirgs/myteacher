@@ -15,6 +15,7 @@ export function App() {
   const [sessionState, setSessionState] = useState<SessionState>("idle");
   const [transcript, setTranscript] = useState("");
   const [aiResponse, setAiResponse] = useState("");
+  const [debugMode, setDebugMode] = useState(false);
 
   // Ref to avoid stale closures in VAD callbacks and the message handler
   const sessionStateRef = useRef<SessionState>(sessionState);
@@ -271,6 +272,8 @@ export function App() {
           onStartPresetLesson={handleStartPresetLesson}
           transcript={transcript}
           aiResponse={aiResponse}
+          debugMode={debugMode}
+          onDebugToggle={setDebugMode}
         />
       </aside>
     </div>

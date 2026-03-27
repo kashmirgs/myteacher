@@ -10,6 +10,8 @@ interface ControlsProps {
   onStartPresetLesson: (topicId: string) => void;
   transcript: string;
   aiResponse: string;
+  debugMode: boolean;
+  onDebugToggle: (v: boolean) => void;
 }
 
 const STATE_COLORS: Record<SessionState, string> = {
@@ -35,6 +37,8 @@ export function Controls({
   onStartPresetLesson,
   transcript,
   aiResponse,
+  debugMode,
+  onDebugToggle,
 }: ControlsProps) {
   const [topics, setTopics] = useState<TopicSummary[]>([]);
   const [selectedTopicId, setSelectedTopicId] = useState('');
@@ -126,19 +130,28 @@ export function Controls({
         {isOpen ? 'Durdur' : 'Mikrofon'}
       </button>
 
-      {transcript && (
+      {debugMode && transcript && (
         <div className="transcript-box">
           <div className="transcript-label">Sen:</div>
           <div className="transcript-text">{transcript}</div>
         </div>
       )}
 
-      {aiResponse && (
+      {debugMode && aiResponse && (
         <div className="transcript-box ai-response">
           <div className="transcript-label">Öğretmen:</div>
           <div className="transcript-text">{aiResponse}</div>
         </div>
       )}
+
+      <label className="debug-toggle">
+        <input
+          type="checkbox"
+          checked={debugMode}
+          onChange={(e) => onDebugToggle(e.target.checked)}
+        />
+        Debug
+      </label>
     </div>
   );
 }
