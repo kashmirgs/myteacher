@@ -635,6 +635,9 @@ export function handleConnection(ws: WebSocket): void {
         if (isFinal) {
           stopSTT();
           handleFinalTranscript(text);
+        } else if (isLessonNarrating && lessonResumeTimer) {
+          // Kullanıcı aktif konuşuyor — timer'ı sıfırla
+          startLessonResumeTimer();
         }
       },
     });
