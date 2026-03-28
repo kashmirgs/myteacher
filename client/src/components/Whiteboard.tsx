@@ -10,6 +10,8 @@ interface WhiteboardProps {
   onAnnotationClick: (index: number) => void;
   overlayItems?: BoardItem[];
   onOverlayDismiss?: () => void;
+  micOn?: boolean;
+  onMicToggle?: () => void;
 }
 
 function QuestionItem({ item }: { item: Extract<BoardItem, { type: 'question' }> }) {
@@ -50,7 +52,7 @@ function QuestionItem({ item }: { item: Extract<BoardItem, { type: 'question' }>
   );
 }
 
-export function Whiteboard({ items, revealedCount, drawingSteps, onAnnotationClick, overlayItems, onOverlayDismiss }: WhiteboardProps) {
+export function Whiteboard({ items, revealedCount, drawingSteps, onAnnotationClick, overlayItems, onOverlayDismiss, micOn, onMicToggle }: WhiteboardProps) {
   const qaSeparatorRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -60,6 +62,9 @@ export function Whiteboard({ items, revealedCount, drawingSteps, onAnnotationCli
   }, [overlayItems]);
   return (
     <div className="board-panel">
+      <div className={`mic-indicator ${micOn ? 'mic-on' : ''}`} onClick={onMicToggle}>
+        🎙
+      </div>
       {items.map((item, index) => {
         const visible = index < revealedCount;
         const className = `board-item${visible ? ' board-item--visible' : ''}`;

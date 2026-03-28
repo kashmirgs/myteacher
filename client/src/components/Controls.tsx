@@ -127,7 +127,7 @@ export function Controls({
         onClick={onMicToggle}
         disabled={!isConnected}
       >
-        {isOpen ? 'Durdur' : 'Mikrofon'}
+        {isOpen ? 'Mikrofonu Kapa' : 'Mikrofonu Aç'}
       </button>
 
       {debugMode && transcript && (
