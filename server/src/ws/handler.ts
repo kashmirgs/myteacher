@@ -1186,6 +1186,33 @@ export function handleConnection(ws: WebSocket): void {
           console.log("[handler] stop_listening ignored (reason=mic_close)");
           break;
         }
+
+        if ("reason" in msg && msg.reason === "user_done") {
+          if (!sttActive) {
+            console.log("[handler] user_done — stt not active, going idle");
+            session.transition("idle");
+            break;
+          }
+          // Tell Deepgram to flush its internal buffer.
+          // This triggers onTranscript(text, true) via normal callback flow.
+          stt.finalize();
+          console.log("[handler] user_done — finalize sent, waiting for transcript");
+
+          // Safety timeout: if Deepgram doesn't respond, clean up
+          const gen = sttGeneration;
+          if (sttRestartTimer) {
+            clearTimeout(sttRestartTimer);
+            sttRestartTimer = null;
+          }
+          setTimeout(() => {
+            if (gen !== sttGeneration) return; // already handled by normal callback
+            console.log("[handler] user_done timeout — no transcript arrived, going idle");
+            stopSTT();
+            if (session.getState() === "listening") session.transition("idle");
+          }, 1500);
+          break;
+        }
+
         const now = performance.now();
         if (lastBargeInAt > 0 && now - lastBargeInAt < stopAfterBargeInMs) {
           console.log("[handler] stop_listening ignored (recent barge_in)");

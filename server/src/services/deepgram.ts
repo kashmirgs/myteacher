@@ -10,6 +10,8 @@ export interface STTCallbacks {
 export interface STTService {
   start(callbacks: STTCallbacks): void;
   feedAudio(chunk: Buffer): void;
+  /** Ask Deepgram to flush its internal buffer; triggers onTranscript via normal callback. */
+  finalize(): void;
   stop(): void;
 }
 
@@ -134,6 +136,12 @@ export function createSTTService(): STTService {
       } else {
         // Buffer audio until Deepgram WebSocket is open
         pendingChunks.push(ab);
+      }
+    },
+
+    finalize() {
+      if (connection && isReady) {
+        connection.finalize();
       }
     },
 

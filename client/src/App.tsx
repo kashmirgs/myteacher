@@ -16,6 +16,7 @@ export function App() {
   const [transcript, setTranscript] = useState("");
   const [aiResponse, setAiResponse] = useState("");
   const [debugMode, setDebugMode] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
 
   // Ref to avoid stale closures in VAD callbacks and the message handler
   const sessionStateRef = useRef<SessionState>(sessionState);
@@ -206,6 +207,8 @@ export function App() {
         console.log("[mic] close ignored (recent barge_in)");
         return;
       }
+      // Signal server to flush transcript before tearing down mic
+      send({ type: "stop_listening", reason: "user_done", source: "handleMicToggle" });
       // Shutdown mic + VAD only — do NOT stop audioPlayer so TTS/lesson continues
       vadDetach();
       close();
@@ -221,7 +224,7 @@ export function App() {
       }
       start();
     }
-  }, [isOpen, start, close, vadDetach, audioPlayer]);
+  }, [isOpen, start, close, vadDetach, audioPlayer, send]);
 
   const handleGenerateLesson = useCallback(
     (topic: string) => {
@@ -255,27 +258,32 @@ export function App() {
   }, [send]);
 
   return (
-    <div className="app">
+    <div className={`app ${!sidebarOpen ? 'sidebar-collapsed' : ''}`}>
       <header className="app-header">
         <h1>MyTeacher</h1>
       </header>
       <main className="app-main">
-        <Whiteboard items={boardItems} revealedCount={revealedCount} drawingSteps={drawingSteps} onAnnotationClick={handleAnnotationClick} overlayItems={qaBoardItems} onOverlayDismiss={handleOverlayDismiss} />
+        <Whiteboard items={boardItems} revealedCount={revealedCount} drawingSteps={drawingSteps} onAnnotationClick={handleAnnotationClick} overlayItems={qaBoardItems} onOverlayDismiss={handleOverlayDismiss} micOn={isOpen} onMicToggle={handleMicToggle} />
       </main>
-      <aside className="app-sidebar">
-        <Controls
-          isConnected={isConnected}
-          sessionState={sessionState}
-          isOpen={isOpen}
-          onMicToggle={handleMicToggle}
-          onGenerateLesson={handleGenerateLesson}
-          onStartPresetLesson={handleStartPresetLesson}
-          transcript={transcript}
-          aiResponse={aiResponse}
-          debugMode={debugMode}
-          onDebugToggle={setDebugMode}
-        />
-      </aside>
+      <button className="sidebar-toggle" onClick={() => setSidebarOpen(o => !o)}>
+        {sidebarOpen ? '\u203A' : '\u2039'}
+      </button>
+      {sidebarOpen && (
+        <aside className="app-sidebar">
+          <Controls
+            isConnected={isConnected}
+            sessionState={sessionState}
+            isOpen={isOpen}
+            onMicToggle={handleMicToggle}
+            onGenerateLesson={handleGenerateLesson}
+            onStartPresetLesson={handleStartPresetLesson}
+            transcript={transcript}
+            aiResponse={aiResponse}
+            debugMode={debugMode}
+            onDebugToggle={setDebugMode}
+          />
+        </aside>
+      )}
     </div>
   );
 }
