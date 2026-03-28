@@ -276,30 +276,44 @@ export function useAudioPlayer() {
     const ctx = getContext(); // creates context + gain if missing
     await ensureRunning(ctx, "warmUp");
 
-    // MediaElement fallback: ensure audio output unlocked for Safari.
-    try {
-      if (!mediaDestRef.current) {
-        mediaDestRef.current = ctx.createMediaStreamDestination();
-      }
-      if (!mediaElRef.current) {
-        const el = document.createElement("audio");
-        // Keep element off-DOM; we only need its playback pipeline.
-        el.autoplay = true;
-        el.muted = false;
-        el.volume = 1;
-        mediaElRef.current = el;
-      }
-      if (mediaElRef.current.srcObject !== mediaDestRef.current.stream) {
-        mediaElRef.current.srcObject = mediaDestRef.current.stream;
-      }
-      await mediaElRef.current.play();
-      console.debug("[audio] media element play() ok");
+    // Media element fallback is only needed on Safari where
+    // AudioContext.destination can silently fail. On Chrome, the extra
+    // MediaStream → HTMLAudioElement hop causes voice distortion (deeper/
+    // slower) for several seconds after barge-in stop → restart cycles.
+    const isSafari =
+      /safari/i.test(navigator.userAgent) &&
+      !/chrome/i.test(navigator.userAgent);
 
-      // Use exactly one output route to avoid echo.
-      mediaRouteActiveRef.current = true;
-      connectOutputRoute();
-    } catch (err) {
-      console.warn("[audio] media element play() failed:", err);
+    if (isSafari) {
+      try {
+        if (!mediaDestRef.current) {
+          mediaDestRef.current = ctx.createMediaStreamDestination();
+        }
+        if (!mediaElRef.current) {
+          const el = document.createElement("audio");
+          // Keep element off-DOM; we only need its playback pipeline.
+          el.autoplay = true;
+          el.muted = false;
+          el.volume = 1;
+          mediaElRef.current = el;
+        }
+        if (mediaElRef.current.srcObject !== mediaDestRef.current.stream) {
+          mediaElRef.current.srcObject = mediaDestRef.current.stream;
+        }
+        await mediaElRef.current.play();
+        console.debug("[audio] media element play() ok, route=media");
+
+        // Use exactly one output route to avoid echo.
+        mediaRouteActiveRef.current = true;
+        connectOutputRoute();
+      } catch (err) {
+        console.warn("[audio] media element play() failed:", err);
+        mediaRouteActiveRef.current = false;
+        connectOutputRoute();
+      }
+    } else {
+      // Chrome/Firefox: direct destination, no media element overhead
+      console.debug("[audio] skipping media element (non-Safari), route=destination");
       mediaRouteActiveRef.current = false;
       connectOutputRoute();
     }
