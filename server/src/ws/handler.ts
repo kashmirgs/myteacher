@@ -604,6 +604,7 @@ export function handleConnection(ws: WebSocket): void {
 
       onError(err) {
         if (gen !== llmGeneration) return;
+        console.error("[handler] LLM stream error:", err);
         currentLLMHandle = null;
         tts.stop(); // Clean up the pre-opened WS
         send({

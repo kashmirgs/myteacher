@@ -123,6 +123,7 @@ export function createTTSService(): TTSService {
       });
 
       ws.on('error', (err) => {
+        if (!ws) return;
         console.error('[tts] cartesia ws error:', err);
         if (currentContextId !== contextId) return;
         if (active) {
@@ -221,6 +222,7 @@ export function createTTSService(): TTSService {
       });
 
       ws.on('error', (err) => {
+        if (!ws) return;
         console.error('[tts] cartesia ws error:', err);
         if (currentContextId !== contextId) return;
         if (active) {
