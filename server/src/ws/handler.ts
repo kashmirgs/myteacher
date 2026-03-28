@@ -404,6 +404,7 @@ export function handleConnection(ws: WebSocket): void {
                 if (resumeGen !== llmGeneration) return;
                 if (!session.transition("processing")) return;
                 if (!session.transition("speaking")) return;
+                send({ type: "qa_board_clear" });
                 send({ type: "state_change", state: "speaking" });
                 resumeLesson(lastRevealedIdx + 1);
               }, RESUME_DELAY_MS);
@@ -1189,8 +1190,15 @@ export function handleConnection(ws: WebSocket): void {
 
         if ("reason" in msg && msg.reason === "user_done") {
           if (!sttActive) {
-            console.log("[handler] user_done — stt not active, going idle");
-            session.transition("idle");
+            const st = session.getState();
+            if (st === "processing" || st === "speaking") {
+              console.log("[handler] user_done — stt not active, but %s in progress, letting it finish", st);
+            } else if (isLessonNarrating && lessonResumeTimer) {
+              console.log("[handler] lesson narrating — staying in listening for auto-resume");
+            } else {
+              console.log("[handler] user_done — stt not active, going idle");
+              session.transition("idle");
+            }
             break;
           }
           // Tell Deepgram to flush its internal buffer.
@@ -1206,9 +1214,15 @@ export function handleConnection(ws: WebSocket): void {
           }
           setTimeout(() => {
             if (gen !== sttGeneration) return; // already handled by normal callback
-            console.log("[handler] user_done timeout — no transcript arrived, going idle");
+            console.log("[handler] user_done timeout — no transcript arrived");
             stopSTT();
-            if (session.getState() === "listening") session.transition("idle");
+            if (session.getState() === "listening") {
+              if (isLessonNarrating && lessonResumeTimer) {
+                console.log("[handler] lesson narrating — staying in listening for auto-resume");
+              } else {
+                session.transition("idle");
+              }
+            }
           }, 1500);
           break;
         }
@@ -1269,7 +1283,6 @@ export function handleConnection(ws: WebSocket): void {
         currentLLMHandle?.abort();
         currentLLMHandle = null;
         tts.stop();
-        send({ type: "qa_board_clear" });
         revealTimers.forEach((t) => clearTimeout(t));
         revealTimers = [];
         if (state === "speaking") {
