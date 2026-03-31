@@ -44,25 +44,35 @@ function extractClause(buffer: string): { clause: string; remaining: string } | 
 }
 
 /** Silent PCM pause injected between speeches (s16le, 24kHz, mono) */
-const RESUME_DELAY_MS = process.env.NODE_ENV === "test" ? 0 : 3000;
+const RESUME_DELAY_MS = process.env.VITEST ? 0 : 5000;
+const UNDERSTANDING_CHECK_RESUME_MS = process.env.VITEST ? 0 : 4000;
 
 const TRANSITION_PHRASES = [
-  "Peki, nerede kalmıştık... ",
-  "Şimdi derse devam edelim. ",
+  "Peki, devam edelim. ",
   "Tamam, devam ediyorum. ",
+  "Güzel, devam edelim. ",
+  "Hadi devam edelim. ",
   "Pekii, derse dönelim. ",
-  "Hadi bakalım, devam edelim. ",
-  "Güzel, kaldığımız yerden devam. ",
-  "Devam ediyoruz. ",
 ];
 
-const PAUSE_MS = process.env.NODE_ENV === "test" ? 0 : 400;
+const UNDERSTANDING_CHECK_PHRASES = [
+  "Anlaşıldı mı?",
+  "Burası anlaşıldı mı?",
+  "Tamam mı sence?",
+  "Burası net mi?",
+  "Sorun var mı?",
+  "Bu kısım tamam mı?",
+];
+
+const UNDERSTANDING_CHECK_DELAY_MS = process.env.VITEST ? 0 : 1000;
+
+const PAUSE_MS = process.env.VITEST ? 0 : 400;
 const PAUSE_SEC = PAUSE_MS / 1000;
 const SILENCE_SAMPLES = Math.ceil(24000 * PAUSE_MS / 1000); // 9600
 const SILENCE_CHUNK = Buffer.alloc(SILENCE_SAMPLES * 2).toString('base64');
 
 const RESUME_PATTERNS =
-  /^(devam|devam\s+et|derse\s+devam|derse\s+devam\s+et|devam\s+edelim|sürdür|geç|tamam\s+devam|evet\s+devam)\b/i;
+  /^(devam|devam\s+et|derse\s+devam|derse\s+devam\s+et|devam\s+edelim|sürdür|geç|tamam\s+devam|evet\s+devam|evet|anladım|tamam|oldu|tamamdır|he|hı|hıhı|evet\s+anladım|anlaşıldı|peki)\b/i;
 
 function isResumeCommand(text: string): boolean {
   // Strip punctuation and normalize whitespace for robust matching
@@ -231,10 +241,10 @@ export function handleConnection(ws: WebSocket): void {
   let sttActive = false;
   let sttRestartTimer: NodeJS.Timeout | null = null;
   let revealTimers: NodeJS.Timeout[] = [];
-  const sttRestartDelayMs = process.env.NODE_ENV === "test" ? 0 : 350;
-  const bargeInSuppressMs = process.env.NODE_ENV === "test" ? 0 : 400;
-  const ttsEndSuppressMs = process.env.NODE_ENV === "test" ? 0 : 500;
-  const ttsEndSTTDelayMs = process.env.NODE_ENV === "test" ? 0 : 150;
+  const sttRestartDelayMs = process.env.VITEST ? 0 : 350;
+  const bargeInSuppressMs = process.env.VITEST ? 0 : 400;
+  const ttsEndSuppressMs = process.env.VITEST ? 0 : 500;
+  const ttsEndSTTDelayMs = process.env.VITEST ? 0 : 150;
   let suppressTranscriptsUntil = 0;
   const stopAfterBargeInMs = 1000;
   let lastBargeInAt = 0;
@@ -255,9 +265,9 @@ export function handleConnection(ws: WebSocket): void {
   // Lesson resume timeout – auto-resumes lesson if STT produces no transcript
   // (e.g. noise-triggered barge-in) or overlay is not dismissed within timeout.
   let lessonResumeTimer: NodeJS.Timeout | null = null;
-  const lessonResumeTimeoutMs = process.env.NODE_ENV === "test" ? 0 : 10000;
+  const lessonResumeTimeoutMs = process.env.VITEST ? 0 : 10000;
 
-  function startLessonResumeTimer() {
+  function startLessonResumeTimer(ms = lessonResumeTimeoutMs) {
     clearLessonResumeTimer();
     if (!isLessonNarrating) return;
     lessonResumeTimer = setTimeout(() => {
@@ -271,7 +281,7 @@ export function handleConnection(ws: WebSocket): void {
       if (!session.transition("speaking")) return;
       send({ type: "tts_start" });
       resumeLesson(lastRevealedIdx + 1);
-    }, lessonResumeTimeoutMs);
+    }, ms);
     revealTimers.push(lessonResumeTimer);
   }
 
@@ -380,19 +390,20 @@ export function handleConnection(ws: WebSocket): void {
       onEnd: () => {
         if (session.getState() !== "speaking") return;
 
-        const proceed = () => {
+        const finalize = (afterCheck = false) => {
           if (isLessonNarrating) {
-            if (qaBoardSent) {
-              console.log(`[handler] Q&A TTS ended, waiting for overlay dismiss before resuming lesson from idx ${lastRevealedIdx + 1}`);
+            if (qaBoardSent || afterCheck) {
+              // Board sent OR understanding check — listen and wait with resettable timer
+              console.log(`[handler] Q&A TTS ended, ${qaBoardSent ? "waiting for overlay dismiss" : "understanding check done"}, resuming lesson from idx ${lastRevealedIdx + 1}`);
               awaitingOverlayDismiss = true;
               send({ type: "tts_end" });
               session.transition("listening");
               suppressTranscriptsUntil = performance.now() + ttsEndSuppressMs;
               pendingAudio.length = 0;
               scheduleSTTStart(ttsEndSTTDelayMs);
-              startLessonResumeTimer();
+              startLessonResumeTimer(afterCheck && !qaBoardSent ? UNDERSTANDING_CHECK_RESUME_MS : undefined);
             } else {
-              // No board sent — delay then resume lesson
+              // No board sent, no check — delay then resume lesson
               console.log(`[handler] Q&A TTS ended, no board sent, will resume lesson from idx ${lastRevealedIdx + 1} after ${RESUME_DELAY_MS}ms`);
               send({ type: "tts_end" });
               session.transition("listening");
@@ -419,6 +430,39 @@ export function handleConnection(ws: WebSocket): void {
           scheduleSTTStart(ttsEndSTTDelayMs);
         };
 
+        const proceed = () => {
+          // Understanding check: for long Q&A responses during lesson narration,
+          // inject a short silence + random check phrase before finalizing
+          if (isLessonNarrating && lastQAResponseLength > 150) {
+            // Send silence PCM for a natural pause (s16le, 24kHz, mono)
+            const silenceSamples = Math.ceil(24000 * UNDERSTANDING_CHECK_DELAY_MS / 1000);
+            if (silenceSamples > 0) {
+              const silenceBuf = Buffer.alloc(silenceSamples * 2);
+              send({ type: "tts_chunk", audio: silenceBuf.toString("base64") });
+            }
+            // Pick a random understanding check phrase
+            const phrase = UNDERSTANDING_CHECK_PHRASES[
+              Math.floor(Math.random() * UNDERSTANDING_CHECK_PHRASES.length)
+            ];
+            console.log(`[handler] Q&A understanding check: "${phrase}"`);
+            const checkHandle = tts.openStream({
+              onStart: () => {},
+              onChunk: (audio) => {
+                if (gen !== llmGeneration) return;
+                send({ type: "tts_chunk", audio });
+              },
+              onEnd: () => {
+                if (gen !== llmGeneration) return;
+                if (session.getState() !== "speaking") return;
+                finalize(true);
+              },
+            });
+            checkHandle.feed(phrase, true);
+            return;
+          }
+          finalize();
+        };
+
         if (boardPendingPromise) {
           // Board generation in-flight — wait for it before deciding
           boardPendingPromise.finally(() => {
@@ -436,7 +480,7 @@ export function handleConnection(ws: WebSocket): void {
     // short — the system will automatically resume the lesson afterwards.
     if (isLessonNarrating) {
       history.addUserMessage(
-        `[Sistem: Ders anlatımı devam ediyor. Çok kısa cevap ver (1 cümle). Dersi sen anlatma, sistem otomatik devam edecek.]\n${text}`,
+        `[Sistem: Ders anlatımı devam ediyor. Kısa cevap ver (1-2 cümle). Kapanış sorusu ekleme. Dersi sen anlatma, sistem otomatik devam edecek.]\n${text}`,
       );
     } else {
       history.addUserMessage(text);
@@ -701,7 +745,7 @@ export function handleConnection(ws: WebSocket): void {
     // a natural pause. Long Q&A → spoken phrase; short Q&A → brief "Peki."
     // Feeding separately can cause Cartesia to end the stream early, so we
     // prepend to the first speech text instead.
-    const isTest = process.env.NODE_ENV === "test";
+    const isTest = process.env.VITEST;
     let transitionPrefix: string;
     if (isTest) {
       transitionPrefix = "";
@@ -734,7 +778,7 @@ export function handleConnection(ws: WebSocket): void {
       resumeSpeechEndRatios.push(cumNSResumeRatio / totalResumeNonSpaceChars);
     }
 
-    const INITIAL_MS_PER_CHAR = process.env.NODE_ENV === "test" ? 0 : 100;
+    const INITIAL_MS_PER_CHAR = process.env.VITEST ? 0 : 100;
     let rawResumeEstimatedDuration = totalResumeNonSpaceChars * INITIAL_MS_PER_CHAR / 1000;
     let estimatedResumeDuration = rawResumeEstimatedDuration + (resumeSpeeches.length - 1) * PAUSE_SEC;
     let resumeStartTime = 0;
@@ -968,7 +1012,7 @@ export function handleConnection(ws: WebSocket): void {
       speechEndRatios.push(cumNSRatio / totalNonSpaceChars);
     }
 
-    const INITIAL_MS_PER_CHAR = process.env.NODE_ENV === "test" ? 0 : 100;
+    const INITIAL_MS_PER_CHAR = process.env.VITEST ? 0 : 100;
     let rawEstimatedDuration = totalNonSpaceChars * INITIAL_MS_PER_CHAR / 1000;
     let estimatedTotalDuration = rawEstimatedDuration + (speeches.length - 1) * PAUSE_SEC;
     let narrationStartTime = 0;

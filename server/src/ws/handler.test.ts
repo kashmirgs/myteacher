@@ -775,7 +775,7 @@ describe("handleConnection", () => {
         return { abort: this._abortFn };
       });
 
-      mockSTT._startCb!.onTranscript("Anladım", true);
+      mockSTT._startCb!.onTranscript("3 artı 5 kaç eder", true);
       await vi.waitFor(() => expect(mockTTS.openStream).toHaveBeenCalledTimes(initialOpenStreamCount + 1));
 
       await vi.waitFor(() => {
