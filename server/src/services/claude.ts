@@ -299,6 +299,7 @@ Kurallar:
     smooth: true ile noktalar arası yumuşak eğri çizilir (sinüs, dalga, parabolik eğri gibi). Yeterli nokta kullan (10-20 arası).
   fraction: { type: "fraction", x: 200, y: 150, numerator: "3", denominator: "4", fontSize?: 16, fill?: "#e8e8d8" }
     Kesir ve bölme işlemlerini bu şekille göster. Pay üstte, payda altta, aralarında çizgi olur. Düz metin "3/4" yerine fraction shape kullan.
+    ÖNEMLİ: fraction toplam yüksekliği ~2×fontSize'dır (pay + çizgi + payda). Fraction'ın yanına text koyuyorsan, text'in y koordinatı fraction'ın y'si ile aynı olmalı (çizgi hizası) ve text ile fraction arasında yatayda en az 30px boşluk bırak. Üst üste binmelerini önlemek için text'i fraction'ın sol veya sağ tarafına koy, aynı alana değil.
   text shape: { type: "text", x, y, text, fontSize?, fill?, anchor?: "start"|"middle"|"end" }
   Açılar derece (0=sağ, saat yönünün tersi).
   Renkler: #f87171 (kırmızı), #60a5fa (mavi), #4ade80 (yeşil), #fbbf24 (sarı), #c084fc (mor)
@@ -347,6 +348,7 @@ Drawing referansı:
     points mutlaka dizi içinde [x,y] çiftleri olmalı. Örnek üçgen: points: [[200,50],[100,250],[300,250]]
   fraction: { type: "fraction", x: 200, y: 150, numerator: "3", denominator: "4", fontSize?: 16, fill?: "#e8e8d8" }
     Kesir ve bölme işlemlerini bu şekille göster.
+    ÖNEMLİ: fraction toplam yüksekliği ~2×fontSize'dır. Fraction'ın yanına text koyuyorsan, text'in y koordinatı fraction'ın y'si ile aynı olmalı ve yatayda en az 30px boşluk bırak. Üst üste binmelerini önle.
   text: { type: "text", x, y, text, fontSize?, fill?, anchor?: "start"|"middle"|"end" }
   arrow: { type: "arrow", x1, y1, x2, y2, stroke?, strokeWidth? }
   Renkler: #f87171 (kırmızı), #60a5fa (mavi), #4ade80 (yeşil), #fbbf24 (sarı), #c084fc (mor)
