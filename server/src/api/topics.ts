@@ -55,9 +55,9 @@ export async function handleTopicsAPI(
   if (method === "POST" && path === "/api/topics/generate") {
     try {
       const body = JSON.parse(await readBody(req));
-      const { topic, gradeLevel, length, includeQuestions, examStyle } = body as {
+      const { topic, gradeLevel, length, includeQuestions, examStyle, description } = body as {
         topic: string; gradeLevel?: number; length?: string;
-        includeQuestions?: boolean; examStyle?: boolean;
+        includeQuestions?: boolean; examStyle?: boolean; description?: string;
       };
       if (!topic) {
         json(res, { error: "topic is required" }, 400);
@@ -66,7 +66,7 @@ export async function handleTopicsAPI(
       const llm = getLLM();
       const validLength = (length === "short" || length === "medium" || length === "long") ? length : undefined;
       const questionOpts = includeQuestions ? { includeQuestions, examStyle } : undefined;
-      const boardItems: LessonBoardItem[] = await llm.generateLesson(topic, gradeLevel, validLength, questionOpts);
+      const boardItems: LessonBoardItem[] = await llm.generateLesson(topic, gradeLevel, validLength, questionOpts, description);
       json(res, { boardItems });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

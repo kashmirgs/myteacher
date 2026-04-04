@@ -90,7 +90,7 @@ export function Admin() {
       const res = await fetch("/api/topics/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ topic: title, gradeLevel, length: lessonLength, includeQuestions, examStyle: includeQuestions && examStyle }),
+        body: JSON.stringify({ topic: title, gradeLevel, length: lessonLength, includeQuestions, examStyle: includeQuestions && examStyle, description: description || undefined }),
       });
       const data = await res.json();
       if (!res.ok) {

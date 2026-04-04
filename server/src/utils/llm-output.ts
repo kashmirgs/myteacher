@@ -185,6 +185,14 @@ export function validateBoard(items: BoardItem[]): ValidationResult {
     }
     types.add(item.type);
 
+    // Validate pauseMs if present (used by LessonBoardItem)
+    const pauseMs = (item as any).pauseMs;
+    if (pauseMs !== undefined) {
+      if (typeof pauseMs !== 'number' || pauseMs < 0 || pauseMs > 30000) {
+        errors.push(`invalid pauseMs: ${pauseMs} (must be 0-30000)`);
+      }
+    }
+
     if (item.type === 'list') {
       if (!Array.isArray(item.items) || item.items.length === 0) {
         errors.push('list item has empty or missing items array');

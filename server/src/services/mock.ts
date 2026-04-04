@@ -63,7 +63,7 @@ function buildMockAnnotationAnswer(item: BoardItem, question: string): string {
 
 export function createMockLLMService(): LLMService {
   return {
-    async generateLesson(topic: string, _gradeLevel?: number, _length?: string, _questionOpts?: any): Promise<LessonBoardItem[]> {
+    async generateLesson(topic: string, _gradeLevel?: number, _length?: string, _questionOpts?: any, _description?: string): Promise<LessonBoardItem[]> {
       console.log(`[llm:mock] generating lesson for: ${topic}`);
       return buildMockLesson(topic);
     },

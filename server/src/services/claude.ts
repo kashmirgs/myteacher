@@ -7,7 +7,7 @@ import type { ConversationHistory } from "./conversation.js";
 
 /** LLM service — real Anthropic API for speech responses, placeholder for board generation */
 
-export type LessonBoardItem = BoardItem & { speech?: string };
+export type LessonBoardItem = BoardItem & { speech?: string; pauseMs?: number };
 
 export interface LLMStreamCallbacks {
   onToken(delta: string, snapshot: string): void;
@@ -25,7 +25,7 @@ export interface QuestionOptions {
 }
 
 export interface LLMService {
-  generateLesson(topic: string, gradeLevel?: number, length?: LessonLength, questionOpts?: QuestionOptions): Promise<LessonBoardItem[]>;
+  generateLesson(topic: string, gradeLevel?: number, length?: LessonLength, questionOpts?: QuestionOptions, description?: string): Promise<LessonBoardItem[]>;
   generateSpeechResponse(transcript: string): Promise<string>;
   streamSpeechResponse(
     transcript: string,
@@ -46,12 +46,12 @@ export interface LLMService {
 
 function createFallbackLLMService(primary: LLMService, fallback: LLMService): LLMService {
   return {
-    async generateLesson(topic: string, gradeLevel?: number, length?: LessonLength, questionOpts?: QuestionOptions): Promise<LessonBoardItem[]> {
+    async generateLesson(topic: string, gradeLevel?: number, length?: LessonLength, questionOpts?: QuestionOptions, description?: string): Promise<LessonBoardItem[]> {
       try {
-        return await primary.generateLesson(topic, gradeLevel, length, questionOpts);
+        return await primary.generateLesson(topic, gradeLevel, length, questionOpts, description);
       } catch (err) {
         console.warn("[llm] primary generateLesson failed, using fallback:", err);
-        return fallback.generateLesson(topic, gradeLevel, length, questionOpts);
+        return fallback.generateLesson(topic, gradeLevel, length, questionOpts, description);
       }
     },
 
@@ -186,7 +186,7 @@ function buildLessonSystemPrompt(gradeLevel?: number, length?: LessonLength): st
 // Default for WS lesson generation (no grade level info)
 export const LESSON_SYSTEM_PROMPT = buildLessonSystemPrompt(1);
 
-export function buildLessonPrompt(topic: string, gradeLevel?: number, length?: LessonLength, questionOpts?: QuestionOptions): string {
+export function buildLessonPrompt(topic: string, gradeLevel?: number, length?: LessonLength, questionOpts?: QuestionOptions, description?: string): string {
   const level = gradeLevel ?? 1;
   const cfg = LESSON_LENGTH_CONFIG[length ?? "short"];
   let schoolType: string;
@@ -251,7 +251,7 @@ export function buildLessonPrompt(topic: string, gradeLevel?: number, length?: L
     : "title, text, formula, list, highlight, drawing";
 
   return `Konu: ${topic}
-Seviye: ${level}. sınıf (${schoolType})
+${description ? `Açıklama: ${description}\n` : ''}Seviye: ${level}. sınıf (${schoolType})
 
 Aşağıdaki JSON formatında bir ders tahtası oluştur. ${cfg.items} eleman üret. İlk eleman mutlaka "title" olsun. En az 2 farklı tip kullan.
 
@@ -311,6 +311,7 @@ Kurallar:
 - Formüllerde LaTeX sözdizimi KULLANMA (\\le, \\frac, \\sin, \\cos gibi). Düz metin ve Unicode semboller kullan. Örnekler: ≤, ≥, ≠, ×, ÷, √, π, ², ³, ½. Yanlış: "-1 \\le \\sin(x) \\le 1". Doğru: "-1 ≤ sin(x) ≤ 1".
 - Drawing içinde kesir/bölme gösterimi gerekiyorsa fraction shape kullan, "3/4" gibi düz metin yazma.
 - speech: o item gösterilirken sesli söylenecek metin (${cfg.speechLen}, doğal konuşma dili Türkçe). Her item'da speech olmalı (drawing hariç, drawing'de step'lerde).
+- pauseMs (opsiyonel): Bu item'ın speech'i bittikten sonra bir sonraki item'a geçmeden önce beklenecek süre (milisaniye). Varsayılan 400ms. Öğrencinin düşünmesi gereken sorularda veya önemli kavramlardan sonra daha uzun pause kullan (2000-5000ms). Örnek: { "type": "question", ..., "pauseMs": 3000 }
 - speech'te formül değişkenlerini Türkçe harf adıyla yaz, tek harf bırakma. Örnekler: r → "re", l → "le", h → "he", b → "be", d → "de", n → "ne", x → "iks". π → "pi". Yanlış: "pi r l". Doğru: "pi re le".
 - İlk item (title) speech'i, dersin konusunu tanıtan ve öğrenciyi motive eden sıcak bir giriş olsun. Örnek: "Bugün çok güzel bir konu işleyeceğiz! Hazır mısın?" veya "Hadi bugün birlikte harika bir şey öğrenelim!"
 - Bazı item'ların speech'inde öğrenciye yönelik kısa etkileşim soruları sor: "3 artı 5 kaç eder sence?", "Bunu hatırlıyor musun?", "Sence bu neden böyle?". Her 3-4 item'da bir bu tarz bir soru ekle. Öğrenci cevap vermezse ders otomatik devam edecek, sorun olmaz.
@@ -410,10 +411,10 @@ function createClaudeLLMService(): LLMService {
   const client = new Anthropic();
 
   return {
-    async generateLesson(topic: string, gradeLevel?: number, length?: LessonLength, questionOpts?: QuestionOptions): Promise<LessonBoardItem[]> {
+    async generateLesson(topic: string, gradeLevel?: number, length?: LessonLength, questionOpts?: QuestionOptions, description?: string): Promise<LessonBoardItem[]> {
       console.log(`[llm:claude] generating lesson for: ${topic} (grade ${gradeLevel ?? "default"}, length ${length ?? "default"})`);
 
-      const prompt = buildLessonPrompt(topic, gradeLevel, length, questionOpts);
+      const prompt = buildLessonPrompt(topic, gradeLevel, length, questionOpts, description);
       const systemPrompt = buildLessonSystemPrompt(gradeLevel, length);
 
       for (let attempt = 0; attempt < 2; attempt++) {

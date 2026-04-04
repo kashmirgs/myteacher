@@ -19,10 +19,10 @@ export function createGeminiLLMService(): LLMService {
   const ai = new GoogleGenAI({ apiKey: process.env.GOOGLE_API_KEY });
 
   return {
-    async generateLesson(topic: string, gradeLevel?: number, length?: LessonLength, questionOpts?: QuestionOptions): Promise<LessonBoardItem[]> {
+    async generateLesson(topic: string, gradeLevel?: number, length?: LessonLength, questionOpts?: QuestionOptions, description?: string): Promise<LessonBoardItem[]> {
       console.log(`[llm:gemini] generating lesson for: ${topic} (grade ${gradeLevel ?? "default"}, length ${length ?? "default"})`);
 
-      const prompt = buildLessonPrompt(topic, gradeLevel, length, questionOpts);
+      const prompt = buildLessonPrompt(topic, gradeLevel, length, questionOpts, description);
       const systemPrompt = buildLessonSystemPrompt(gradeLevel, length);
 
       // Try pro model first, fall back to flash-lite on failure

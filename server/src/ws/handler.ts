@@ -60,6 +60,22 @@ const PAUSE_SEC = PAUSE_MS / 1000;
 const SILENCE_SAMPLES = Math.ceil(24000 * PAUSE_MS / 1000); // 9600
 const SILENCE_CHUNK = Buffer.alloc(SILENCE_SAMPLES * 2).toString('base64');
 
+/** Generate a silence chunk of the given duration in ms (s16le, 24kHz, mono) */
+function makeSilenceChunk(ms: number): string {
+  if (ms <= 0) return '';
+  const samples = Math.ceil(24000 * ms / 1000);
+  return Buffer.alloc(samples * 2).toString('base64');
+}
+
+/** Compute cumulative pause offsets: cumulativePause[i] = sum of pauses[0..i-1] */
+function buildCumulativePause(pauses: number[]): number[] {
+  const cum: number[] = [0]; // no pause before first speech
+  for (let i = 0; i < pauses.length - 1; i++) {
+    cum.push(cum[i] + pauses[i]);
+  }
+  return cum;
+}
+
 const RESUME_PATTERNS =
   /^(devam|devam\s+et|derse\s+devam|derse\s+devam\s+et|devam\s+edelim|sürdür|geç|tamam\s+devam|evet\s+devam|evet|anladım|tamam|oldu|tamamdır|he|hı|hıhı|evet\s+anladım|anlaşıldı|peki)\b/i;
 
@@ -244,6 +260,7 @@ export function handleConnection(ws: WebSocket): void {
     | { type: "drawing_step"; itemIndex: number; stepIndex: number };
 
   let lessonSpeeches: string[] = [];
+  let lessonPauseAfterSec: number[] = []; // per-speech pause duration (seconds) after each speech
   let revealActions: RevealAction[] = [];
   let isLessonNarrating = false;
   let lastRevealedIdx = 0;
@@ -780,9 +797,14 @@ export function handleConnection(ws: WebSocket): void {
       resumeSpeechEndRatios.push(cumNSResumeRatio / totalResumeNonSpaceChars);
     }
 
+    // Per-item pause: slice pauses for remaining speeches
+    const resumePauses = lessonPauseAfterSec.slice(fromIdx);
+    const resumeCumulativePause = buildCumulativePause(resumePauses);
+    const totalResumePauseSec = resumePauses.slice(0, -1).reduce((a, b) => a + b, 0);
+
     const INITIAL_MS_PER_CHAR = process.env.VITEST ? 0 : 100;
     let rawResumeEstimatedDuration = totalResumeNonSpaceChars * INITIAL_MS_PER_CHAR / 1000;
-    let estimatedResumeDuration = rawResumeEstimatedDuration + (resumeSpeeches.length - 1) * PAUSE_SEC;
+    let estimatedResumeDuration = rawResumeEstimatedDuration + totalResumePauseSec;
     let resumeStartTime = 0;
     let nextResumeRevealIdx = 0; // relative to fromIdx; first one revealed immediately below if no prefix
     let resumeRevealCheckInterval: NodeJS.Timeout | null = null;
@@ -819,7 +841,7 @@ export function handleConnection(ws: WebSocket): void {
         if (cumulativeResumeTimestampChars > 20) {
           const lastEndTime = endTimes[endTimes.length - 1];
           rawResumeEstimatedDuration = totalResumeNonSpaceChars * lastEndTime / cumulativeResumeTimestampChars;
-          estimatedResumeDuration = rawResumeEstimatedDuration + (resumeSpeeches.length - 1) * PAUSE_SEC;
+          estimatedResumeDuration = rawResumeEstimatedDuration + totalResumePauseSec;
         }
       },
       onChunk: (audio) => {
@@ -850,11 +872,11 @@ export function handleConnection(ws: WebSocket): void {
               } else {
                 const boundaryIdx = nextResumeRevealIdx - 1;
                 if (boundaryIdx < resumeSpeechBoundaryAudioTimes.length) {
-                  // Exact timing from Cartesia timestamps + accumulated pause offsets
-                  threshold = resumeSpeechBoundaryAudioTimes[boundaryIdx] + nextResumeRevealIdx * PAUSE_SEC;
+                  // Exact timing from Cartesia timestamps + per-item cumulative pause
+                  threshold = resumeSpeechBoundaryAudioTimes[boundaryIdx] + resumeCumulativePause[nextResumeRevealIdx];
                 } else {
-                  // Fallback: ratio-based estimate (before timestamps arrive) + pause offsets
-                  threshold = resumeSpeechEndRatios[boundaryIdx] * rawResumeEstimatedDuration + nextResumeRevealIdx * PAUSE_SEC;
+                  // Fallback: ratio-based estimate (before timestamps arrive) + per-item cumulative pause
+                  threshold = resumeSpeechEndRatios[boundaryIdx] * rawResumeEstimatedDuration + resumeCumulativePause[nextResumeRevealIdx];
                 }
               }
               if (elapsedSec >= threshold) {
@@ -875,12 +897,15 @@ export function handleConnection(ws: WebSocket): void {
         }
         send({ type: "tts_chunk", audio });
 
-        // Track cumulative audio duration and inject silence at boundaries
+        // Track cumulative audio duration and inject per-item silence at boundaries
         cumulativeResumeAudioSec += Buffer.byteLength(audio, 'base64') / (2 * 24000);
         while (nextResumeSilenceBoundaryIdx < resumeSpeechBoundaryAudioTimes.length &&
                nextResumeSilenceBoundaryIdx < resumeSpeeches.length - 1 &&
                cumulativeResumeAudioSec >= resumeSpeechBoundaryAudioTimes[nextResumeSilenceBoundaryIdx]) {
-          send({ type: "tts_chunk", audio: SILENCE_CHUNK });
+          const silenceMs = resumePauses[nextResumeSilenceBoundaryIdx] * 1000;
+          if (silenceMs > 0) {
+            send({ type: "tts_chunk", audio: silenceMs === PAUSE_MS ? SILENCE_CHUNK : makeSilenceChunk(silenceMs) });
+          }
           nextResumeSilenceBoundaryIdx++;
         }
       },
@@ -955,21 +980,25 @@ export function handleConnection(ws: WebSocket): void {
     // Build flat speeches[] and parallel revealActions[] from items.
     // Drawing items expand into N entries (one per step).
     const speeches: string[] = [];
+    const pauses: number[] = []; // pause after each speech entry (seconds)
     const actions: RevealAction[] = [];
 
     boardItems = lessonItems.map((it) => {
-      const { speech, ...rest } = it as any;
+      const { speech, pauseMs: _pauseMs, ...rest } = it as any;
       return rest as BoardItem;
     });
 
     for (let i = 0; i < boardItems.length; i++) {
       const item = boardItems[i];
       const rawSpeech = (lessonItems[i] as { speech?: string }).speech;
+      const itemPauseSec = ((lessonItems[i] as any).pauseMs ?? PAUSE_MS) / 1000;
 
       if (item.type === "drawing") {
         for (let si = 0; si < item.steps.length; si++) {
           const stepSpeech = item.steps[si].speech;
           speeches.push(stepSpeech);
+          // Intermediate steps get default pause, last step gets item's pauseMs
+          pauses.push(si < item.steps.length - 1 ? PAUSE_SEC : itemPauseSec);
           if (si === 0) {
             // First step reveals the drawing canvas
             actions.push({ type: "board_reveal", index: i });
@@ -981,11 +1010,13 @@ export function handleConnection(ws: WebSocket): void {
         const speech = rawSpeech
           || ("text" in item && typeof item.text === "string" ? item.text : "");
         speeches.push(speech);
+        pauses.push(itemPauseSec);
         actions.push({ type: "board_reveal", index: i });
       }
     }
 
     lessonSpeeches = speeches;
+    lessonPauseAfterSec = pauses;
     revealActions = actions;
     isLessonNarrating = true;
     lastRevealedIdx = 0;
@@ -1014,9 +1045,13 @@ export function handleConnection(ws: WebSocket): void {
       speechEndRatios.push(cumNSRatio / totalNonSpaceChars);
     }
 
+    // Per-item pause: cumulative pause offsets for reveal timing
+    const cumulativePause = buildCumulativePause(pauses);
+    const totalPauseSec = pauses.slice(0, -1).reduce((a, b) => a + b, 0); // exclude last item's pause
+
     const INITIAL_MS_PER_CHAR = process.env.VITEST ? 0 : 100;
     let rawEstimatedDuration = totalNonSpaceChars * INITIAL_MS_PER_CHAR / 1000;
-    let estimatedTotalDuration = rawEstimatedDuration + (speeches.length - 1) * PAUSE_SEC;
+    let estimatedTotalDuration = rawEstimatedDuration + totalPauseSec;
     let narrationStartTime = 0;
     let nextRevealIdx = 1; // 0 already revealed
     let revealCheckInterval: NodeJS.Timeout | null = null;
@@ -1047,7 +1082,7 @@ export function handleConnection(ws: WebSocket): void {
         if (cumulativeTimestampChars > 20) {
           const lastEndTime = endTimes[endTimes.length - 1];
           rawEstimatedDuration = totalNonSpaceChars * lastEndTime / cumulativeTimestampChars;
-          estimatedTotalDuration = rawEstimatedDuration + (speeches.length - 1) * PAUSE_SEC;
+          estimatedTotalDuration = rawEstimatedDuration + totalPauseSec;
         }
       },
       onChunk: (audio) => {
@@ -1071,11 +1106,11 @@ export function handleConnection(ws: WebSocket): void {
               const boundaryIdx = nextRevealIdx - 1;
               let threshold: number;
               if (boundaryIdx < speechBoundaryAudioTimes.length) {
-                // Exact timing from Cartesia timestamps + accumulated pause offsets
-                threshold = speechBoundaryAudioTimes[boundaryIdx] + nextRevealIdx * PAUSE_SEC;
+                // Exact timing from Cartesia timestamps + per-item cumulative pause
+                threshold = speechBoundaryAudioTimes[boundaryIdx] + cumulativePause[nextRevealIdx];
               } else {
-                // Fallback: ratio-based estimate (before timestamps arrive) + pause offsets
-                threshold = speechEndRatios[boundaryIdx] * rawEstimatedDuration + nextRevealIdx * PAUSE_SEC;
+                // Fallback: ratio-based estimate (before timestamps arrive) + per-item cumulative pause
+                threshold = speechEndRatios[boundaryIdx] * rawEstimatedDuration + cumulativePause[nextRevealIdx];
               }
               if (elapsedSec >= threshold) {
                 lastRevealedIdx = nextRevealIdx;
@@ -1094,12 +1129,15 @@ export function handleConnection(ws: WebSocket): void {
         }
         send({ type: "tts_chunk", audio });
 
-        // Track cumulative audio duration and inject silence at boundaries
+        // Track cumulative audio duration and inject per-item silence at boundaries
         cumulativeAudioSec += Buffer.byteLength(audio, 'base64') / (2 * 24000);
         while (nextSilenceBoundaryIdx < speechBoundaryAudioTimes.length &&
                nextSilenceBoundaryIdx < speeches.length - 1 &&
                cumulativeAudioSec >= speechBoundaryAudioTimes[nextSilenceBoundaryIdx]) {
-          send({ type: "tts_chunk", audio: SILENCE_CHUNK });
+          const silenceMs = pauses[nextSilenceBoundaryIdx] * 1000;
+          if (silenceMs > 0) {
+            send({ type: "tts_chunk", audio: silenceMs === PAUSE_MS ? SILENCE_CHUNK : makeSilenceChunk(silenceMs) });
+          }
           nextSilenceBoundaryIdx++;
         }
       },
