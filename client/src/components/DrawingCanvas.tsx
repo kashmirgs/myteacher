@@ -382,7 +382,7 @@ export function DrawingCanvas({ item, revealedSteps }: DrawingCanvasProps) {
 
   return (
     <div className="drawing-canvas">
-      <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} preserveAspectRatio="xMidYMid meet">
+      <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} preserveAspectRatio="xMidYMid meet" overflow="visible">
         {stepGroups}
       </svg>
     </div>
