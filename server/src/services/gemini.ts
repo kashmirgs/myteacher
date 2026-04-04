@@ -152,5 +152,23 @@ export function createGeminiLLMService(): LLMService {
       console.log(`[llm:gemini] generateBoardOnly done in ${elapsed}ms (${items.length} items)`);
       return items as BoardItem[];
     },
+
+    async generateTransition(lastQAResponse: string, nextSpeech: string): Promise<string> {
+      const t0 = performance.now();
+      console.log(`[llm:gemini] generateTransition`);
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: [{ role: "user", parts: [{ text: `Son soru-cevap: "${lastQAResponse.slice(0, 200)}"\nDevam edilecek konu: "${nextSpeech.slice(0, 200)}"` }] }],
+        config: {
+          systemInstruction: "Sen bir ilkokul öğretmenisin. Öğrencinin sorusuna cevap verdin, şimdi derse geri dönüyorsun. Tek bir kısa geçiş cümlesi yaz (5-12 kelime). Sadece cümleyi yaz, başka bir şey ekleme.",
+          maxOutputTokens: 100,
+        },
+      });
+      const text = response.text?.trim() ?? "";
+      const elapsed = (performance.now() - t0).toFixed(0);
+      console.log(`[llm:gemini] generateTransition done in ${elapsed}ms: "${text}"`);
+      return text;
+    },
   };
 }

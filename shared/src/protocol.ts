@@ -81,7 +81,8 @@ export type ClientMessage =
   | { type: "annotation_click"; index: number; question: string }
   | { type: "generate_lesson"; topic: string }
   | { type: "start_preset_lesson"; topicId: string }
-  | { type: "qa_overlay_dismiss" };
+  | { type: "qa_overlay_dismiss" }
+  | { type: "tts_playback_done" };
 
 // ── Server → Client Messages ──
 

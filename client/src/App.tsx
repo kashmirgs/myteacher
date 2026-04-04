@@ -139,6 +139,17 @@ export function App() {
       case "tts_end":
         audioPlayer.flush();
         suppressAudio(300);
+        // Notify server when client audio buffer finishes playing
+        {
+          const checkPlaybackDone = () => {
+            if (!audioPlayer.isTTSPlaying()) {
+              send({ type: "tts_playback_done" });
+            } else {
+              setTimeout(checkPlaybackDone, 100);
+            }
+          };
+          setTimeout(checkPlaybackDone, 100);
+        }
         break;
       case "error":
         console.error("[server]", msg.message);

@@ -41,6 +41,7 @@ export interface LLMService {
     gradeLevel?: number,
   ): Promise<string>;
   generateBoardOnly?(speechText: string, history: ConversationHistory): Promise<BoardItem[]>;
+  generateTransition?(lastQAResponse: string, nextSpeech: string): Promise<string>;
 }
 
 function createFallbackLLMService(primary: LLMService, fallback: LLMService): LLMService {
@@ -103,6 +104,7 @@ function createFallbackLLMService(primary: LLMService, fallback: LLMService): LL
     },
 
     generateBoardOnly: primary.generateBoardOnly ?? fallback.generateBoardOnly,
+    generateTransition: primary.generateTransition ?? fallback.generateTransition,
   };
 }
 
@@ -118,6 +120,7 @@ Kurallar:
 - Her seferinde yeniden tanışma veya merhaba deme. Sohbet devam ediyorsa doğrudan konuya gir.
 - Önceki konuşmalardaki bilgileri hatırla ve tutarlı ol. Aynı şeyleri tekrarlama.
 - Tahtada bir ders varsa, öğrencinin soruları o dersle ilgili olabilir.
+- Ders anlatımı sırasında öğrenci soru sorarsa: kısa ama sıcak bir cevap ver (1-2 cümle). Dersi sen anlatmaya devam etme, sistem otomatik devam edecek. Cevabın 2 veya daha fazla cümle olacaksa, sonuna konuyla ilgili doğal bir anlayış kontrolü ekle (örn: "Bu kısım anlaşıldı mı?", "Toplama işlemi mantıklı geldi mi?", "Burası net mi sence?"). Tek cümlelik kısa cevaplarda ekleme.
 
 Tahta desteği (opsiyonel):
 - Cevabın görsel açıklama gerektiriyorsa (formül, liste, diyagram), sesli cevap metninden SONRA ---BOARD--- marker'ı koy ve ardından JSON dizisi ekle.
@@ -177,7 +180,7 @@ const LESSON_LENGTH_CONFIG: Record<LessonLength, { items: string; speechLen: str
 function buildLessonSystemPrompt(gradeLevel?: number, length?: LessonLength): string {
   const { level, schoolType, tone } = getSchoolInfo(gradeLevel);
   const cfg = LESSON_LENGTH_CONFIG[length ?? "short"];
-  return `Sen ${level}. sınıf (${schoolType}) öğretmenisin. Sadece istenen JSON formatında yanıt ver.\nHer eleman için "speech" alanına o elemanın sesli anlatımını yaz (${cfg.speechLen}, konuşma dili).\n${tone}`;
+  return `Sen ${level}. sınıf (${schoolType}) öğretmenisin. Sadece istenen JSON formatında yanıt ver.\nHer eleman için "speech" alanına o elemanın sesli anlatımını yaz (${cfg.speechLen}).\nSpeech alanını, öğrenciyle birebir konuşuyormuş gibi doğal konuşma dilinde yaz. Ders kitabı dili kullanma. "Şimdi şöyle düşünelim...", "Bak burada ilginç bir şey var...", "Mesela şunu hayal et..." gibi doğal ifadeler kullan.\n${tone}`;
 }
 
 // Default for WS lesson generation (no grade level info)
@@ -309,6 +312,8 @@ Kurallar:
 - Drawing içinde kesir/bölme gösterimi gerekiyorsa fraction shape kullan, "3/4" gibi düz metin yazma.
 - speech: o item gösterilirken sesli söylenecek metin (${cfg.speechLen}, doğal konuşma dili Türkçe). Her item'da speech olmalı (drawing hariç, drawing'de step'lerde).
 - speech'te formül değişkenlerini Türkçe harf adıyla yaz, tek harf bırakma. Örnekler: r → "re", l → "le", h → "he", b → "be", d → "de", n → "ne", x → "iks". π → "pi". Yanlış: "pi r l". Doğru: "pi re le".
+- İlk item (title) speech'i, dersin konusunu tanıtan ve öğrenciyi motive eden sıcak bir giriş olsun. Örnek: "Bugün çok güzel bir konu işleyeceğiz! Hazır mısın?" veya "Hadi bugün birlikte harika bir şey öğrenelim!"
+- Bazı item'ların speech'inde öğrenciye yönelik kısa etkileşim soruları sor: "3 artı 5 kaç eder sence?", "Bunu hatırlıyor musun?", "Sence bu neden böyle?". Her 3-4 item'da bir bu tarz bir soru ekle. Öğrenci cevap vermezse ders otomatik devam edecek, sorun olmaz.
 - Ders kendi içinde tam olsun. "Şimdi örnek çözeceğiz", "bir sonraki derste göreceğiz" gibi derste olmayan içeriklere atıf yapma. Son item dersi özetleyen veya öğrenileni pekiştiren bir kapanış olsun.`;
 }
 
@@ -531,6 +536,23 @@ function createClaudeLLMService(): LLMService {
       const elapsed = (performance.now() - t0).toFixed(0);
       console.log(`[llm:claude] generateBoardOnly done in ${elapsed}ms (${items.length} items)`);
       return items as BoardItem[];
+    },
+
+    async generateTransition(lastQAResponse: string, nextSpeech: string): Promise<string> {
+      const t0 = performance.now();
+      console.log(`[llm:claude] generateTransition`);
+
+      const response = await client.messages.create({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 100,
+        system: "Sen bir ilkokul öğretmenisin. Öğrencinin sorusuna cevap verdin, şimdi derse geri dönüyorsun. Tek bir kısa geçiş cümlesi yaz (5-12 kelime). Sadece cümleyi yaz, başka bir şey ekleme.",
+        messages: [{ role: "user" as const, content: `Son soru-cevap: "${lastQAResponse.slice(0, 200)}"\nDevam edilecek konu: "${nextSpeech.slice(0, 200)}"` }],
+      });
+      const block = response.content[0];
+      if (block.type !== "text") throw new Error("Unexpected response type");
+      const elapsed = (performance.now() - t0).toFixed(0);
+      console.log(`[llm:claude] generateTransition done in ${elapsed}ms: "${block.text}"`);
+      return block.text.trim();
     },
   };
 }

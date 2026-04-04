@@ -44,8 +44,7 @@ function extractClause(buffer: string): { clause: string; remaining: string } | 
 }
 
 /** Silent PCM pause injected between speeches (s16le, 24kHz, mono) */
-const RESUME_DELAY_MS = process.env.VITEST ? 0 : 5000;
-const UNDERSTANDING_CHECK_RESUME_MS = process.env.VITEST ? 0 : 4000;
+const RESUME_DELAY_MS = process.env.VITEST ? 0 : 3000;
 
 const TRANSITION_PHRASES = [
   "Peki, devam edelim. ",
@@ -55,16 +54,6 @@ const TRANSITION_PHRASES = [
   "Pekii, derse dönelim. ",
 ];
 
-const UNDERSTANDING_CHECK_PHRASES = [
-  "Anlaşıldı mı?",
-  "Burası anlaşıldı mı?",
-  "Tamam mı sence?",
-  "Burası net mi?",
-  "Sorun var mı?",
-  "Bu kısım tamam mı?",
-];
-
-const UNDERSTANDING_CHECK_DELAY_MS = process.env.VITEST ? 0 : 1000;
 
 const PAUSE_MS = process.env.VITEST ? 0 : 400;
 const PAUSE_SEC = PAUSE_MS / 1000;
@@ -259,23 +248,28 @@ export function handleConnection(ws: WebSocket): void {
   let isLessonNarrating = false;
   let lastRevealedIdx = 0;
   let lastQAResponseLength = 0;
+  let lastQAResponseText = "";
   let awaitingOverlayDismiss = false;
+  let awaitingPlaybackDone = false;
   let lastTransitionIdx = -1;
+  let pendingTransition: Promise<string> | null = null;
 
   // Lesson resume timeout – auto-resumes lesson if STT produces no transcript
   // (e.g. noise-triggered barge-in) or overlay is not dismissed within timeout.
   let lessonResumeTimer: NodeJS.Timeout | null = null;
-  const lessonResumeTimeoutMs = process.env.VITEST ? 0 : 10000;
+  const lessonResumeTimeoutMs = process.env.VITEST ? 0 : 6000;
 
   function startLessonResumeTimer(ms = lessonResumeTimeoutMs) {
     clearLessonResumeTimer();
     if (!isLessonNarrating) return;
+    console.log(`[handler] startLessonResumeTimer ms=${ms}`);
     lessonResumeTimer = setTimeout(() => {
       lessonResumeTimer = null;
       if (!isLessonNarrating || session.getState() !== "listening") return;
       console.log("[handler] lesson resume timeout — auto-resuming");
       stopSTT();
       awaitingOverlayDismiss = false;
+      awaitingPlaybackDone = false;
       send({ type: "qa_board_clear" });
       if (!session.transition("processing")) return;
       if (!session.transition("speaking")) return;
@@ -308,6 +302,7 @@ export function handleConnection(ws: WebSocket): void {
   function handleFinalTranscript(text: string) {
     if (session.getState() !== "listening") return;
     clearLessonResumeTimer();
+    awaitingPlaybackDone = false;
 
     // Ders anlatımı sırasında "devam et" benzeri ifadeler → LLM'i atla, direkt resume
     if (isLessonNarrating) {
@@ -315,6 +310,7 @@ export function handleConnection(ws: WebSocket): void {
       console.log(`[handler] transcript during lesson: "${text}", isResumeCommand=${resume}, lastRevealedIdx=${lastRevealedIdx}`);
       if (resume) {
         awaitingOverlayDismiss = false;
+        awaitingPlaybackDone = false;
         send({ type: "qa_board_clear" });
         if (!session.transition("processing")) return;
         if (!session.transition("speaking")) return;
@@ -401,7 +397,22 @@ export function handleConnection(ws: WebSocket): void {
               suppressTranscriptsUntil = performance.now() + ttsEndSuppressMs;
               pendingAudio.length = 0;
               scheduleSTTStart(ttsEndSTTDelayMs);
-              startLessonResumeTimer(afterCheck && !qaBoardSent ? UNDERSTANDING_CHECK_RESUME_MS : undefined);
+              if (process.env.VITEST) {
+                // In tests there's no client to send tts_playback_done
+                startLessonResumeTimer();
+              } else {
+                // Timer starts on tts_playback_done from client (when audio buffer drains)
+                awaitingPlaybackDone = true;
+                const fallbackGen = llmGeneration;
+                setTimeout(() => {
+                  if (fallbackGen !== llmGeneration) return;
+                  if (awaitingPlaybackDone) {
+                    console.log("[handler] tts_playback_done fallback — starting timer");
+                    awaitingPlaybackDone = false;
+                    startLessonResumeTimer();
+                  }
+                }, 30000);
+              }
             } else {
               // No board sent, no check — delay then resume lesson
               console.log(`[handler] Q&A TTS ended, no board sent, will resume lesson from idx ${lastRevealedIdx + 1} after ${RESUME_DELAY_MS}ms`);
@@ -431,33 +442,11 @@ export function handleConnection(ws: WebSocket): void {
         };
 
         const proceed = () => {
-          // Understanding check: for long Q&A responses during lesson narration,
-          // inject a short silence + random check phrase before finalizing
-          if (isLessonNarrating && lastQAResponseLength > 150) {
-            // Send silence PCM for a natural pause (s16le, 24kHz, mono)
-            const silenceSamples = Math.ceil(24000 * UNDERSTANDING_CHECK_DELAY_MS / 1000);
-            if (silenceSamples > 0) {
-              const silenceBuf = Buffer.alloc(silenceSamples * 2);
-              send({ type: "tts_chunk", audio: silenceBuf.toString("base64") });
-            }
-            // Pick a random understanding check phrase
-            const phrase = UNDERSTANDING_CHECK_PHRASES[
-              Math.floor(Math.random() * UNDERSTANDING_CHECK_PHRASES.length)
-            ];
-            console.log(`[handler] Q&A understanding check: "${phrase}"`);
-            const checkHandle = tts.openStream({
-              onStart: () => {},
-              onChunk: (audio) => {
-                if (gen !== llmGeneration) return;
-                send({ type: "tts_chunk", audio });
-              },
-              onEnd: () => {
-                if (gen !== llmGeneration) return;
-                if (session.getState() !== "speaking") return;
-                finalize(true);
-              },
-            });
-            checkHandle.feed(phrase, true);
+          // During lesson narration, always use resettable timer after Q&A responses
+          // so the student has a chance to respond or ask follow-up questions,
+          // regardless of response length.
+          if (isLessonNarrating) {
+            finalize(true);
             return;
           }
           finalize();
@@ -479,9 +468,7 @@ export function handleConnection(ws: WebSocket): void {
     // When a lesson is being narrated, tell the LLM to keep its answer
     // short — the system will automatically resume the lesson afterwards.
     if (isLessonNarrating) {
-      history.addUserMessage(
-        `[Sistem: Ders anlatımı devam ediyor. Kısa cevap ver (1-2 cümle). Kapanış sorusu ekleme. Dersi sen anlatma, sistem otomatik devam edecek.]\n${text}`,
-      );
+      history.addUserMessage(`(Ders sırasında soru) ${text}`);
     } else {
       history.addUserMessage(text);
     }
@@ -560,7 +547,18 @@ export function handleConnection(ws: WebSocket): void {
           boardJson = fullText.slice(markerIdx + boardMarkerLength(fullText, markerIdx)).trim();
         }
 
-        if (isLessonNarrating) lastQAResponseLength = speechText.length;
+        if (isLessonNarrating) {
+          lastQAResponseLength = speechText.length;
+          lastQAResponseText = speechText;
+          // Start generating contextual transition in the background
+          const nextSpeech = lessonSpeeches.slice(lastRevealedIdx + 1).find(Boolean) ?? "";
+          if (llm.generateTransition && !process.env.VITEST) {
+            pendingTransition = llm.generateTransition(speechText, nextSpeech).catch((err) => {
+              console.warn("[handler] generateTransition failed, will use static fallback:", err);
+              return "";
+            });
+          }
+        }
         history.addAssistantMessage(speechText);
         send({ type: "transcript", text: speechText, isFinal: true });
 
@@ -721,7 +719,7 @@ export function handleConnection(ws: WebSocket): void {
   // state_change:speaking would call start() (same Safari death).
   // The flow is: Q&A onEnd → state_change:speaking → tts_chunks directly.
   /** Resume lesson narration from a given speech index after a barge-in Q&A. */
-  function resumeLesson(fromIdx: number) {
+  async function resumeLesson(fromIdx: number) {
     const remaining = lessonSpeeches.slice(fromIdx);
     if (remaining.every((s) => !s)) {
       isLessonNarrating = false;
@@ -741,14 +739,17 @@ export function handleConnection(ws: WebSocket): void {
     // No tts_start — client audio player is still in playing mode from the Q&A response.
     // This avoids flush()/start() which could disrupt the audio pipeline.
 
-    // Transition prefix prepended to the first speech so Cartesia produces
-    // a natural pause. Long Q&A → spoken phrase; short Q&A → brief "Peki."
-    // Feeding separately can cause Cartesia to end the stream early, so we
-    // prepend to the first speech text instead.
+    // Transition prefix: use LLM-generated contextual transition if available,
+    // otherwise fall back to static phrases.
     const isTest = process.env.VITEST;
     let transitionPrefix: string;
     if (isTest) {
       transitionPrefix = "";
+    } else if (pendingTransition) {
+      const dynamicTransition = await pendingTransition;
+      pendingTransition = null;
+      if (gen !== llmGeneration) return; // generation changed while awaiting
+      transitionPrefix = dynamicTransition ? dynamicTransition + " " : "Peki. ";
     } else if (lastQAResponseLength > 150) {
       let idx = Math.floor(Math.random() * TRANSITION_PHRASES.length);
       if (idx === lastTransitionIdx) idx = (idx + 1) % TRANSITION_PHRASES.length;
@@ -758,6 +759,7 @@ export function handleConnection(ws: WebSocket): void {
       transitionPrefix = "Peki. ";
     }
     lastQAResponseLength = 0;
+    lastQAResponseText = "";
 
     // Pre-compute non-space character boundaries for remaining speeches
     const resumeSpeeches = lessonSpeeches.slice(fromIdx);
@@ -1318,6 +1320,7 @@ export function handleConnection(ws: WebSocket): void {
         );
         lastBargeInAt = performance.now();
         awaitingOverlayDismiss = false;
+        awaitingPlaybackDone = false;
         if (state === "listening") {
           console.log("[handler] barge_in ignored (already listening)");
           break;
@@ -1398,10 +1401,19 @@ export function handleConnection(ws: WebSocket): void {
         break;
       }
 
+      case "tts_playback_done": {
+        if (!awaitingPlaybackDone) break;
+        awaitingPlaybackDone = false;
+        console.log("[handler] tts_playback_done received — starting lesson resume timer");
+        startLessonResumeTimer();
+        break;
+      }
+
       case "qa_overlay_dismiss": {
         if (!awaitingOverlayDismiss) break;
         clearLessonResumeTimer();
         awaitingOverlayDismiss = false;
+        awaitingPlaybackDone = false;
         send({ type: "qa_board_clear" });
         if (isLessonNarrating) {
           if (!session.transition("processing")) break;
