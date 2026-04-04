@@ -305,6 +305,7 @@ Kurallar:
   ÖNEMLİ: Küme, Venn diyagramı gibi kavramsal çizimlerde coordSystem KULLANMA, diyagram modunu kullan.
   ÖNEMLİ: Geometrik şekiller (üçgen, dörtgen, açılar) diyagram modunu kullan, coordSystem KULLANMA. Üçgen çizmek için polygon kullan: { type: "polygon", points: [[200,50],[100,250],[300,250]], stroke: "#60a5fa", strokeWidth: 2 }
   Yerleşim: Etiket/başlık text'leri şeklin dışında olmalı, üst üste binmemeli. Başlık text'ini şeklin üst kenarından en az 20 piksel yukarıya koy. Elemanları şeklin merkezine yakın yerleştir, kenarlara yapışmasın.
+  ÖNEMLİ — Boyutlandırma: Bir şeklin içine text koyuyorsan, şekil text'in tamamını kaplamalı. Her karakter ~10px genişliğinde varsay. Örneğin 10 karakterlik bir text ~100px genişliğindedir; bunu kapsayan çemberin yarıçapı en az 60 olmalı. Şekli text'e göre boyutlandır, text'i şekle sığdırmaya çalışma.
 - ${level}. sınıf (${schoolType}) seviyesinde, Türkçe açıkla.
 - Sayıları rakamla yaz (5, 10 gibi).
 - Formüllerde çok satır varsa her formülü yeni satıra yaz (JSON'da \\n kullan). • karakterini satır ayracı olarak KULLANMA.
@@ -354,6 +355,7 @@ Drawing referansı:
   - Etiket/başlık text'leri şeklin dışında olmalı, üst üste binmemeli.
   - Başlık text'ini şeklin üst kenarından en az 20 piksel yukarıya koy.
   - Elemanları şeklin merkezine yakın yerleştir, kenarlara yapışmasın.
+  - Bir şeklin içine text koyuyorsan, şekil text'in tamamını kaplamalı. Her karakter ~10px genişliğinde varsay. Örneğin 10 karakterlik bir text ~100px genişliğindedir; bunu kapsayan çemberin yarıçapı en az 60 olmalı. Şekli text'e göre boyutlandır, text'i şekle sığdırmaya çalışma.
 
   3D geometrik cisimler (koni, silindir, küre, prizma, piramit):
   ÖNEMLİ: Bu cisimleri düz polygon (üçgen/dörtgen) olarak çizme — 3D perspektif kullan.
