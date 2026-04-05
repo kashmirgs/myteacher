@@ -297,6 +297,13 @@ Kurallar:
     points mutlaka dizi içinde [x,y] çiftleri olmalı. Örnek üçgen: points: [[200,50],[100,250],[300,250]]
   polyline: { type: "polyline", points: [[x1,y1], [x2,y2], ...], stroke?, strokeWidth?, smooth?: true }
     smooth: true ile noktalar arası yumuşak eğri çizilir (sinüs, dalga, parabolik eğri gibi). Yeterli nokta kullan (10-20 arası).
+  Biyolojik yapılar (DNA, hücre):
+    DNA çift sarmalı: İki ayrı polyline (smooth: true) kullan — biri yukarı, biri aşağı salınım yaparak. Aralarına dikey line'lar koy (baz çiftleri). Polygon veya düz çizgi ile DNA çizme.
+    Örnek DNA:
+      Strand 1: {"type":"polyline","points":[[50,150],[80,100],[110,70],[140,80],[170,120],[200,160],[230,200],[260,220],[290,210],[320,170],[350,130]],"stroke":"#60a5fa","strokeWidth":3,"smooth":true}
+      Strand 2: {"type":"polyline","points":[[50,150],[80,200],[110,230],[140,220],[170,180],[200,140],[230,100],[260,80],[290,90],[320,130],[350,170]],"stroke":"#f87171","strokeWidth":3,"smooth":true}
+      Baz çiftleri: Her 60px'de dikey line ile iki strand'ı bağla.
+    Hücre membranı: Ellipse veya kavisli polyline kullan, düz çizgi değil.
   fraction: { type: "fraction", x: 200, y: 150, numerator: "3", denominator: "4", fontSize?: 16, fill?: "#e8e8d8" }
     Kesir ve bölme işlemlerini bu şekille göster. Pay üstte, payda altta, aralarında çizgi olur. Düz metin "3/4" yerine fraction shape kullan.
     ÖNEMLİ: fraction toplam yüksekliği ~2×fontSize'dır (pay + çizgi + payda). Fraction'ın yanına text koyuyorsan, text'in y koordinatı fraction'ın y'si ile aynı olmalı (çizgi hizası) ve text ile fraction arasında yatayda en az 30px boşluk bırak. Üst üste binmelerini önlemek için text'i fraction'ın sol veya sağ tarafına koy, aynı alana değil.
@@ -345,6 +352,13 @@ Drawing referansı:
     smooth: true ile noktalar arası yumuşak eğri çizilir (sinüs, dalga, parabolik eğri gibi).
     ÖNEMLİ: Eğriler için 15-25 nokta kullan, az nokta ile eğri bozuk görünür!
     Eğrisel şekillerde ayrık line/arc parçaları KULLANMA, her zaman polyline + smooth: true kullan.
+  Biyolojik yapılar (DNA, hücre):
+    DNA çift sarmalı: İki ayrı polyline (smooth: true) kullan — biri yukarı, biri aşağı salınım yaparak. Aralarına dikey line'lar koy (baz çiftleri). Polygon veya düz çizgi ile DNA çizme.
+    Örnek DNA:
+      Strand 1: {"type":"polyline","points":[[50,150],[80,100],[110,70],[140,80],[170,120],[200,160],[230,200],[260,220],[290,210],[320,170],[350,130]],"stroke":"#60a5fa","strokeWidth":3,"smooth":true}
+      Strand 2: {"type":"polyline","points":[[50,150],[80,200],[110,230],[140,220],[170,180],[200,140],[230,100],[260,80],[290,90],[320,130],[350,170]],"stroke":"#f87171","strokeWidth":3,"smooth":true}
+      Baz çiftleri: Her 60px'de dikey line ile iki strand'ı bağla.
+    Hücre membranı: Ellipse veya kavisli polyline kullan, düz çizgi değil.
   polygon: { type: "polygon", points: [[x1,y1], [x2,y2], [x3,y3]], fill?, stroke?, strokeWidth? }
     points mutlaka dizi içinde [x,y] çiftleri olmalı. Örnek üçgen: points: [[200,50],[100,250],[300,250]]
   fraction: { type: "fraction", x: 200, y: 150, numerator: "3", denominator: "4", fontSize?: 16, fill?: "#e8e8d8" }
