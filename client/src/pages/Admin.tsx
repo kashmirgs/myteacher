@@ -200,10 +200,11 @@ export function Admin() {
 
           <div className="admin-field">
             <label>Açıklama (opsiyonel)</label>
-            <input
+            <textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               placeholder="Kısa açıklama..."
+              rows={3}
             />
           </div>
 
