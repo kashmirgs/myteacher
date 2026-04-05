@@ -64,7 +64,7 @@ export async function handleTopicsAPI(
         return true;
       }
       const llm = getLLM();
-      const validLength = (length === "short" || length === "medium" || length === "long") ? length : undefined;
+      const validLength = (length === "short" || length === "medium" || length === "long" || length === "extra_long") ? length : undefined;
       const questionOpts = includeQuestions ? { includeQuestions, examStyle } : undefined;
       const boardItems: LessonBoardItem[] = await llm.generateLesson(topic, gradeLevel, validLength, questionOpts, description);
       json(res, { boardItems });

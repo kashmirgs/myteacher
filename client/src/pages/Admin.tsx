@@ -46,6 +46,7 @@ const LESSON_LENGTHS = [
   { value: "short", label: "Kısa (~1 dk)" },
   { value: "medium", label: "Orta (~3 dk)" },
   { value: "long", label: "Uzun (~5 dk)" },
+  { value: "extra_long", label: "Çok Uzun (~10 dk)" },
 ];
 
 export function Admin() {

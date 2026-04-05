@@ -159,7 +159,7 @@ Tahta desteği (opsiyonel):
 
 export const SPEECH_SYSTEM_PROMPT = buildSpeechSystemPrompt(1);
 
-export type LessonLength = "short" | "medium" | "long";
+export type LessonLength = "short" | "medium" | "long" | "extra_long";
 
 function getSchoolInfo(gradeLevel?: number): { level: number; schoolType: string; tone: string } {
   const level = gradeLevel ?? 1;
@@ -172,9 +172,10 @@ function getSchoolInfo(gradeLevel?: number): { level: number; schoolType: string
 }
 
 const LESSON_LENGTH_CONFIG: Record<LessonLength, { items: string; speechLen: string }> = {
-  short:  { items: "5-7 arası",  speechLen: "1-2 cümle" },
-  medium: { items: "8-12 arası", speechLen: "2-3 cümle" },
-  long:   { items: "13-18 arası", speechLen: "3-4 cümle" },
+  short:      { items: "5-7 arası",  speechLen: "1-2 cümle" },
+  medium:     { items: "8-12 arası", speechLen: "2-3 cümle" },
+  long:       { items: "13-18 arası", speechLen: "3-4 cümle" },
+  extra_long: { items: "25-35 arası", speechLen: "4-5 cümle" },
 };
 
 function buildLessonSystemPrompt(gradeLevel?: number, length?: LessonLength): string {
