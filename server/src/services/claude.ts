@@ -303,6 +303,7 @@ Kurallar:
   text shape: { type: "text", x, y, text, fontSize?, fill?, anchor?: "start"|"middle"|"end" }
   Açılar derece (0=sağ, saat yönünün tersi).
   Renkler: #f87171 (kırmızı), #60a5fa (mavi), #4ade80 (yeşil), #fbbf24 (sarı), #c084fc (mor)
+  ÖNEMLİ: Text'in üzerine çizgi (üstü çizili efekt) KOYMA. Yanlış cevabı göstermek istiyorsan text'in rengini kırmızı yap veya başına ✗ ekle — line ile üstünü çizme.
   ÖNEMLİ: Küme, Venn diyagramı gibi kavramsal çizimlerde coordSystem KULLANMA, diyagram modunu kullan.
   ÖNEMLİ: Geometrik şekiller (üçgen, dörtgen, açılar) diyagram modunu kullan, coordSystem KULLANMA. Üçgen çizmek için polygon kullan: { type: "polygon", points: [[200,50],[100,250],[300,250]], stroke: "#60a5fa", strokeWidth: 2 }
   Yerleşim: Etiket/başlık text'leri şeklin dışında olmalı, üst üste binmemeli. Başlık text'ini şeklin üst kenarından en az 20 piksel yukarıya koy. Elemanları şeklin merkezine yakın yerleştir, kenarlara yapışmasın.
@@ -352,6 +353,7 @@ Drawing referansı:
   text: { type: "text", x, y, text, fontSize?, fill?, anchor?: "start"|"middle"|"end" }
   arrow: { type: "arrow", x1, y1, x2, y2, stroke?, strokeWidth? }
   Renkler: #f87171 (kırmızı), #60a5fa (mavi), #4ade80 (yeşil), #fbbf24 (sarı), #c084fc (mor)
+  ÖNEMLİ: Text'in üzerine çizgi (üstü çizili efekt) KOYMA. Yanlış cevabı göstermek istiyorsan text'in rengini kırmızı yap veya başına ✗ ekle.
 
   Yerleşim kuralları:
   - Etiket/başlık text'leri şeklin dışında olmalı, üst üste binmemeli.
