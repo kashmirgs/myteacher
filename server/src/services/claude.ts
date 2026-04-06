@@ -4,6 +4,8 @@ import { parseBoardItems, parseLLMJson } from "../utils/llm-output.js";
 import { createGeminiLLMService } from "./gemini.js";
 import { createMockLLMService } from "./mock.js";
 import type { ConversationHistory } from "./conversation.js";
+import type { CurriculumContext } from "./curriculum-research.js";
+import { researchCurriculum } from "./curriculum-research.js";
 
 /** LLM service — real Anthropic API for speech responses, placeholder for board generation */
 
@@ -181,13 +183,13 @@ const LESSON_LENGTH_CONFIG: Record<LessonLength, { items: string; speechLen: str
 function buildLessonSystemPrompt(gradeLevel?: number, length?: LessonLength): string {
   const { level, schoolType, tone } = getSchoolInfo(gradeLevel);
   const cfg = LESSON_LENGTH_CONFIG[length ?? "short"];
-  return `Sen ${level}. sınıf (${schoolType}) öğretmenisin. Sadece istenen JSON formatında yanıt ver.\nHer eleman için "speech" alanına o elemanın sesli anlatımını yaz (${cfg.speechLen}).\nSpeech alanını, öğrenciyle birebir konuşuyormuş gibi doğal konuşma dilinde yaz. Ders kitabı dili kullanma. "Şimdi şöyle düşünelim...", "Bak burada ilginç bir şey var...", "Mesela şunu hayal et..." gibi doğal ifadeler kullan.\n${tone}`;
+  return `Sen ${level}. sınıf (${schoolType}) öğretmenisin. Sadece istenen JSON formatında yanıt ver.\nHer eleman için "speech" alanına o elemanın sesli anlatımını yaz (${cfg.speechLen}).\nSpeech alanını, öğrenciyle birebir konuşuyormuş gibi doğal konuşma dilinde yaz. Ders kitabı dili kullanma. "Şimdi şöyle düşünelim...", "Bak burada ilginç bir şey var...", "Mesela şunu hayal et..." gibi doğal ifadeler kullan.\n${tone}\nDers içeriğini MEB müfredatına ve kazanımlarına uygun olarak oluştur.\nVerilen kazanımları dersin akışına doğal şekilde entegre et.`;
 }
 
 // Default for WS lesson generation (no grade level info)
 export const LESSON_SYSTEM_PROMPT = buildLessonSystemPrompt(1);
 
-export function buildLessonPrompt(topic: string, gradeLevel?: number, length?: LessonLength, questionOpts?: QuestionOptions, description?: string): string {
+export function buildLessonPrompt(topic: string, gradeLevel?: number, length?: LessonLength, questionOpts?: QuestionOptions, description?: string, curriculumContext?: CurriculumContext | null): string {
   const level = gradeLevel ?? 1;
   const cfg = LESSON_LENGTH_CONFIG[length ?? "short"];
   let schoolType: string;
@@ -251,9 +253,15 @@ export function buildLessonPrompt(topic: string, gradeLevel?: number, length?: L
     ? "title, text, formula, list, highlight, drawing, question"
     : "title, text, formula, list, highlight, drawing";
 
+  let curriculumBlock = "";
+  if (curriculumContext && curriculumContext.objectives.length > 0) {
+    const objectivesList = curriculumContext.objectives.map(o => `- ${o}`).join("\n");
+    curriculumBlock = `\nMEB Müfredatı Kazanımları (dersin içeriği aşağıdaki kazanımlara uygun olmalı):\n${objectivesList}\nHer kazanımı en az bir board item'da işle.\n`;
+  }
+
   return `Konu: ${topic}
 ${description ? `Açıklama: ${description}\n` : ''}Seviye: ${level}. sınıf (${schoolType})
-
+${curriculumBlock}
 Aşağıdaki JSON formatında bir ders tahtası oluştur. ${cfg.items} eleman üret. İlk eleman mutlaka "title" olsun. En az 2 farklı tip kullan.
 
 Örnek format:
@@ -435,7 +443,11 @@ function createClaudeLLMService(): LLMService {
     async generateLesson(topic: string, gradeLevel?: number, length?: LessonLength, questionOpts?: QuestionOptions, description?: string): Promise<LessonBoardItem[]> {
       console.log(`[llm:claude] generating lesson for: ${topic} (grade ${gradeLevel ?? "default"}, length ${length ?? "default"})`);
 
-      const prompt = buildLessonPrompt(topic, gradeLevel, length, questionOpts, description);
+      const curriculumContext = gradeLevel
+        ? await researchCurriculum(topic, gradeLevel, description)
+        : null;
+
+      const prompt = buildLessonPrompt(topic, gradeLevel, length, questionOpts, description, curriculumContext);
       const systemPrompt = buildLessonSystemPrompt(gradeLevel, length);
 
       for (let attempt = 0; attempt < 2; attempt++) {
