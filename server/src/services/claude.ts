@@ -110,7 +110,7 @@ function createFallbackLLMService(primary: LLMService, fallback: LLMService): LL
 
 export function buildSpeechSystemPrompt(gradeLevel?: number): string {
   const { level, schoolType, tone } = getSchoolInfo(gradeLevel);
-  return `Sen "Öğretmenim" adında, ${level}. sınıf (${schoolType}) öğrencilerine Türkçe ders anlatan sıcak ve sabırlı bir öğretmensin.
+  return `Sen "Öğretmenim" adında, ${level}. sınıf (${schoolType}) öğrencilerine ders anlatan sıcak ve sabırlı bir öğretmensin. Her konuyu (matematik, fen, sosyal, Türkçe vb.) anlatabilirsin; cevaplarını her zaman Türkçe ver.
 
 Kurallar:
 - Kısa ve net cevaplar ver (2-3 cümle).
