@@ -101,9 +101,12 @@ export function createTTSService(): TTSService {
             chunkCount++;
             if (chunkCount === 1) console.log('[tts] first audio chunk from cartesia');
             callbacks.onChunk(msg.data);
-          } else if (msg.type === 'timestamps' && msg.word_timestamps && callbacks.onTimestamps) {
-            const wt = msg.word_timestamps;
-            callbacks.onTimestamps(wt.words, wt.start, wt.end);
+          } else if (msg.type === 'timestamps') {
+            if (msg.word_timestamps && callbacks.onTimestamps) {
+              const wt = msg.word_timestamps;
+              callbacks.onTimestamps(wt.words, wt.start, wt.end);
+            }
+            // No callback → silently ignore (timestamps are expected)
           } else if (msg.type === 'done') {
             console.log(`[tts] cartesia stream done (${chunkCount} chunks)`);
             active = false;
@@ -198,9 +201,12 @@ export function createTTSService(): TTSService {
             chunkCount++;
             if (chunkCount === 1) console.log('[tts] first audio chunk from cartesia');
             callbacks.onChunk(msg.data);
-          } else if (msg.type === 'timestamps' && msg.word_timestamps && callbacks.onTimestamps) {
-            const wt = msg.word_timestamps;
-            callbacks.onTimestamps(wt.words, wt.start, wt.end);
+          } else if (msg.type === 'timestamps') {
+            if (msg.word_timestamps && callbacks.onTimestamps) {
+              const wt = msg.word_timestamps;
+              callbacks.onTimestamps(wt.words, wt.start, wt.end);
+            }
+            // No callback → silently ignore (timestamps are expected)
           } else if (msg.type === 'done') {
             console.log(`[tts] cartesia stream done (${chunkCount} chunks)`);
             active = false;
