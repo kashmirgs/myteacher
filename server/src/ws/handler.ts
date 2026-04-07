@@ -31,6 +31,17 @@ function boardMarkerLength(text: string, startIdx: number): number {
   return m ? m[0].length : 11; // fallback to "---BOARD---" length
 }
 
+/** Match `---RESUME---` or `---RESUME:<int>---`. Returns { idx, length, targetIndex | null } or null */
+export function parseResumeMarker(text: string): { idx: number; length: number; targetIndex: number | null } | null {
+  const m = text.match(/-{2,}\s*RESUME(?:\s*:\s*(\d+))?\s*-{2,}/);
+  if (!m) return null;
+  return {
+    idx: m.index!,
+    length: m[0].length,
+    targetIndex: m[1] !== undefined ? parseInt(m[1], 10) : null,
+  };
+}
+
 /** Detect clause boundary: `.` `?` `!` followed by space or end-of-string, min 10 chars */
 function extractClause(buffer: string): { clause: string; remaining: string } | null {
   // Look for sentence-ending punctuation followed by space or end-of-string
@@ -360,6 +371,9 @@ export function handleConnection(ws: WebSocket): void {
 
     let buffer = "";
     let boardMarkerDetected = false;
+    let resumeMarkerDetected = false;
+    let shouldResumeLesson = false;
+    let resumeTargetIdx: number | null = null;
     let fedLength = 0;
     let qaBoardSent = false;
     let boardPendingPromise: Promise<void> | null = null;
@@ -404,6 +418,26 @@ export function handleConnection(ws: WebSocket): void {
         if (session.getState() !== "speaking") return;
 
         const finalize = (afterCheck = false) => {
+          if (isLessonNarrating && shouldResumeLesson) {
+            const fromIdx = resumeTargetIdx ?? lastRevealedIdx + 1;
+            console.log(`[handler] LLM signaled resume via ---RESUME--- marker, fromIdx=${fromIdx}`);
+            send({ type: "tts_end" });
+            session.transition("listening");
+            suppressTranscriptsUntil = performance.now() + ttsEndSuppressMs;
+            pendingAudio.length = 0;
+            scheduleSTTStart(ttsEndSTTDelayMs);
+            // Instant resume (no RESUME_DELAY_MS, no overlay wait)
+            const resumeGen = llmGeneration;
+            setTimeout(() => {
+              if (resumeGen !== llmGeneration) return;
+              if (!session.transition("processing")) return;
+              if (!session.transition("speaking")) return;
+              send({ type: "qa_board_clear" });
+              send({ type: "state_change", state: "speaking" });
+              resumeLesson(fromIdx);
+            }, 0);
+            return;
+          }
           if (isLessonNarrating) {
             if (qaBoardSent || afterCheck) {
               // Board sent OR understanding check — listen and wait with resettable timer
@@ -490,6 +524,15 @@ export function handleConnection(ws: WebSocket): void {
       history.addUserMessage(text);
     }
 
+    const lessonContext = isLessonNarrating ? {
+      currentIdx: lastRevealedIdx,
+      total: lessonSpeeches.length,
+      upcoming: lessonSpeeches
+        .slice(lastRevealedIdx + 1, lastRevealedIdx + 11) // next 10
+        .map((s, i) => ({ index: lastRevealedIdx + 1 + i, speech: (s ?? "").slice(0, 80) }))
+        .filter(u => u.speech),
+    } : undefined;
+
     currentLLMHandle = llm.streamSpeechResponse(text, history, {
       onToken(delta, snapshot) {
         if (gen !== llmGeneration) return;
@@ -499,7 +542,7 @@ export function handleConnection(ws: WebSocket): void {
         }
 
         // If marker already detected, ignore further deltas (JSON accumulates in snapshot)
-        if (boardMarkerDetected) {
+        if (boardMarkerDetected || resumeMarkerDetected) {
           return;
         }
 
@@ -510,6 +553,15 @@ export function handleConnection(ws: WebSocket): void {
         if (markerIdx !== -1) {
           boardMarkerDetected = true;
           const speechSnapshot = snapshot.slice(0, markerIdx).trimEnd();
+          send({ type: "transcript", text: speechSnapshot, isFinal: false });
+          return;
+        }
+
+        // Check for RESUME marker (skip intent signal)
+        const resumeMatch = parseResumeMarker(snapshot);
+        if (resumeMatch) {
+          resumeMarkerDetected = true;
+          const speechSnapshot = snapshot.slice(0, resumeMatch.idx).trimEnd();
           send({ type: "transcript", text: speechSnapshot, isFinal: false });
           return;
         }
@@ -554,6 +606,21 @@ export function handleConnection(ws: WebSocket): void {
 
       onDone(fullText) {
         if (gen !== llmGeneration) return;
+
+        // Strip ---RESUME[:idx]--- marker if present (skip signal from LLM)
+        const resumeMatch = parseResumeMarker(fullText);
+        if (resumeMatch) {
+          shouldResumeLesson = true;
+          if (resumeMatch.targetIndex !== null) {
+            const maxIdx = Math.max(0, lessonSpeeches.length - 1);
+            const clamped = Math.max(0, Math.min(resumeMatch.targetIndex, maxIdx));
+            resumeTargetIdx = clamped;
+            if (clamped !== resumeMatch.targetIndex) {
+              console.warn(`[handler] LLM resume target ${resumeMatch.targetIndex} clamped to ${clamped}`);
+            }
+          }
+          fullText = fullText.slice(0, resumeMatch.idx).trimEnd();
+        }
 
         // Split at board marker if present
         let speechText = fullText;
@@ -673,7 +740,7 @@ export function handleConnection(ws: WebSocket): void {
         });
         session.transition("idle");
       },
-    }, currentGradeLevel);
+    }, currentGradeLevel, lessonContext);
   }
 
   /** Start STT with proper transcript handling */

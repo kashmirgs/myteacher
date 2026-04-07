@@ -26,6 +26,15 @@ export interface QuestionOptions {
   examStyle?: boolean;
 }
 
+export type LessonContext = {
+  /** Current position in lessonSpeeches (lastRevealedIdx) */
+  currentIdx: number;
+  /** Total number of speeches in the lesson */
+  total: number;
+  /** Upcoming steps: { index, speech (truncated) } */
+  upcoming: { index: number; speech: string }[];
+};
+
 export interface LLMService {
   generateLesson(topic: string, gradeLevel?: number, length?: LessonLength, questionOpts?: QuestionOptions, description?: string): Promise<LessonBoardItem[]>;
   generateSpeechResponse(transcript: string): Promise<string>;
@@ -34,6 +43,7 @@ export interface LLMService {
     history: ConversationHistory,
     callbacks: LLMStreamCallbacks,
     gradeLevel?: number,
+    lessonContext?: LessonContext,
   ): LLMStreamHandle;
   answerAnnotation(
     boardItems: BoardItem[],
@@ -71,6 +81,7 @@ function createFallbackLLMService(primary: LLMService, fallback: LLMService): LL
       history: ConversationHistory,
       callbacks: LLMStreamCallbacks,
       gradeLevel?: number,
+      lessonContext?: LessonContext,
     ): LLMStreamHandle {
       let fallbackHandle: LLMStreamHandle | null = null;
       const handle = primary.streamSpeechResponse(transcript, history, {
@@ -78,9 +89,9 @@ function createFallbackLLMService(primary: LLMService, fallback: LLMService): LL
         onDone: callbacks.onDone,
         onError: (err) => {
           console.warn("[llm] primary streamSpeechResponse failed, using fallback:", err);
-          fallbackHandle = fallback.streamSpeechResponse(transcript, history, callbacks, gradeLevel);
+          fallbackHandle = fallback.streamSpeechResponse(transcript, history, callbacks, gradeLevel, lessonContext);
         },
-      }, gradeLevel);
+      }, gradeLevel, lessonContext);
 
       return {
         abort: () => {
@@ -110,8 +121,9 @@ function createFallbackLLMService(primary: LLMService, fallback: LLMService): LL
   };
 }
 
-export function buildSpeechSystemPrompt(gradeLevel?: number): string {
+export function buildSpeechSystemPrompt(gradeLevel?: number, lessonContext?: LessonContext): string {
   const { level, schoolType, tone } = getSchoolInfo(gradeLevel);
+  const lessonStatusBlock = lessonContext ? buildLessonStatusBlock(lessonContext) : "";
   return `Sen "Öğretmenim" adında, ${level}. sınıf (${schoolType}) öğrencilerine ders anlatan sıcak ve sabırlı bir öğretmensin. Her konuyu (matematik, fen, sosyal, Türkçe vb.) anlatabilirsin; cevaplarını her zaman Türkçe ver.
 
 Kurallar:
@@ -156,7 +168,36 @@ Tahta desteği (opsiyonel):
   text: { type: "text", x, y, text, fontSize?, fill?, anchor?: "start"|"middle"|"end" }
   Renkler: #f87171 (kırmızı), #60a5fa (mavi), #4ade80 (yeşil), #fbbf24 (sarı), #c084fc (mor)
   Konuyu açıklayacak kadar step ve shape kullan. Yukarıdaki dalga örneğindeki gibi anlamlı ve açıklayıcı bir çizim yap — tek çizgi ile geçiştirme.
-- ÖNEMLİ: Eğer cevabında "çiziyorum", "görebilirsin", "tahtaya yazıyorum" gibi bir ifade kullanıyorsan, ---BOARD--- marker'ını ve JSON'u MUTLAKA ekle. Marker olmadan bu tür ifadeler kullanma — ya marker ile birlikte söyle, ya da hiç bahsetme.`;
+- ÖNEMLİ: Eğer cevabında "çiziyorum", "görebilirsin", "tahtaya yazıyorum" gibi bir ifade kullanıyorsan, ---BOARD--- marker'ını ve JSON'u MUTLAKA ekle. Marker olmadan bu tür ifadeler kullanma — ya marker ile birlikte söyle, ya da hiç bahsetme.${lessonStatusBlock}`;
+}
+
+function buildLessonStatusBlock(ctx: LessonContext): string {
+  const { currentIdx, total, upcoming } = ctx;
+  const upcomingLines = upcoming.length > 0
+    ? upcoming.map(u => `[${u.index}] ${u.speech}${u.speech.length >= 80 ? "..." : ""}`).join("\n")
+    : "(dersin sonu)";
+  return `
+
+Dersin durumu:
+Mevcut pozisyon: ${currentIdx + 1}/${total}
+Önümüzdeki adımlar:
+${upcomingLines}
+
+---RESUME--- marker kullanımı:
+- Öğrenci "atla", "geç", "yeterli", "anladım zaten", "bunu biliyorum", "devam edelim",
+  "açıklamaya gerek yok", "başka konuya geçelim" gibi açıklamayı atlamak veya
+  farklı bir adıma geçmek istediğini belirten bir şey söylerse:
+  * Kısa bir onay cümlesi söyle (4-10 kelime, örn. "Tamam, üçgen özelliklerine geçiyoruz.")
+  * Cümleden sonra ---RESUME--- marker'ı ekle (bir sonraki adıma geçer)
+  * Öğrenci belirli bir konuya atlamak istiyorsa yukarıdaki listeye bak ve uygun index'i kullan:
+    ---RESUME:<index>---
+  * Açıklama yapma, konuyu anlatma, board JSON ekleme, soru sorma
+  * Örnekler:
+    Tamam, devam ediyoruz.
+    ---RESUME---
+
+    Peki, örneklere geçelim.
+    ---RESUME:7---`;
 }
 
 export const SPEECH_SYSTEM_PROMPT = buildSpeechSystemPrompt(1);
@@ -492,13 +533,14 @@ function createClaudeLLMService(): LLMService {
       history: ConversationHistory,
       callbacks: LLMStreamCallbacks,
       gradeLevel?: number,
+      lessonContext?: LessonContext,
     ): LLMStreamHandle {
       console.log(`[llm:claude] streaming speech response for: "${transcript.slice(0, 60)}..."`);
 
       const stream = client.messages.stream({
         model: "claude-haiku-4-5-20251001",
         max_tokens: 1024,
-        system: buildSpeechSystemPrompt(gradeLevel),
+        system: buildSpeechSystemPrompt(gradeLevel, lessonContext),
         messages: history.getMessagesForClaude(),
       });
 

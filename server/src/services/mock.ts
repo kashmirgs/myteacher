@@ -78,6 +78,7 @@ export function createMockLLMService(): LLMService {
       _history: ConversationHistory,
       callbacks: LLMStreamCallbacks,
       _gradeLevel?: number,
+      _lessonContext?: unknown,
     ): LLMStreamHandle {
       console.log(`[llm:mock] streaming speech response for: "${transcript.slice(0, 60)}..."`);
       let cancelled = false;

@@ -1,7 +1,7 @@
 import { GoogleGenAI } from "@google/genai";
 import type { BoardItem } from "@myteacher/shared";
 import { parseBoardItems, parseLLMJson } from "../utils/llm-output.js";
-import type { LLMService, LLMStreamCallbacks, LLMStreamHandle, LessonBoardItem, LessonLength, QuestionOptions } from "./claude.js";
+import type { LLMService, LLMStreamCallbacks, LLMStreamHandle, LessonBoardItem, LessonLength, LessonContext, QuestionOptions } from "./claude.js";
 import {
   buildSpeechSystemPrompt,
   buildAnnotationSystemPrompt,
@@ -70,6 +70,7 @@ export function createGeminiLLMService(): LLMService {
       history: ConversationHistory,
       callbacks: LLMStreamCallbacks,
       gradeLevel?: number,
+      lessonContext?: LessonContext,
     ): LLMStreamHandle {
       console.log(`[llm:gemini] streaming speech response for: "${transcript.slice(0, 60)}..."`);
 
@@ -81,7 +82,7 @@ export function createGeminiLLMService(): LLMService {
             model: "gemini-3.1-flash-lite-preview",
             contents: history.getMessagesForGemini(),
             config: {
-              systemInstruction: buildSpeechSystemPrompt(gradeLevel),
+              systemInstruction: buildSpeechSystemPrompt(gradeLevel, lessonContext),
               maxOutputTokens: 1024,
               abortSignal: controller.signal,
             },

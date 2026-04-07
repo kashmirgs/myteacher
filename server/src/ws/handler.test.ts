@@ -152,7 +152,7 @@ describe("handleConnection", () => {
       await vi.waitFor(() => expect(mockTTS.openStream).toHaveBeenCalled());
 
       expect(mockSTT.stop).toHaveBeenCalled();
-      expect(mockLLM.streamSpeechResponse).toHaveBeenCalledWith("Merhaba", expect.any(Object), expect.any(Object), undefined);
+      expect(mockLLM.streamSpeechResponse).toHaveBeenCalledWith("Merhaba", expect.any(Object), expect.any(Object), undefined, undefined);
 
       // The mock emits "Mocked LLM response" as a single token — no clause boundary
       // detected (no `.?!` followed by space), so full text is fed to TTS in onDone
@@ -1057,6 +1057,159 @@ describe("handleConnection", () => {
 
       // qa_board_clear should have been sent by the timeout
       expect(ws.sentOfType("qa_board_clear").length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  // ── RESUME marker (skip intent) ──
+
+  describe("---RESUME--- marker", () => {
+    const lessonItems = [
+      { type: "heading", text: "Test Lesson", speech: "" },
+      { type: "text", text: "Item 1", speech: "Speech for item one." },
+      { type: "text", text: "Item 2", speech: "Speech for item two." },
+      { type: "text", text: "Item 3", speech: "Speech for item three." },
+    ];
+
+    async function startLesson() {
+      (mockLLM.generateLesson as ReturnType<typeof vi.fn>).mockResolvedValueOnce(lessonItems);
+      ws.receiveJSON({ type: "generate_lesson", topic: "test" });
+      await vi.waitFor(() => expect(mockTTS.openStream).toHaveBeenCalled());
+    }
+
+    it("parseResumeMarker helper parses default marker", async () => {
+      const { parseResumeMarker } = await import("./handler.js");
+      expect(parseResumeMarker("Tamam devam. ---RESUME---")).toMatchObject({ targetIndex: null });
+      expect(parseResumeMarker("Atla. ---RESUME:7---")).toMatchObject({ targetIndex: 7 });
+      expect(parseResumeMarker("no marker here")).toBeNull();
+    });
+
+    it("strips RESUME marker and resumes lesson instantly (default target)", async () => {
+      await startLesson();
+      const initialOpenStreamCount = mockTTS._openStreamCalls.length;
+
+      // Barge-in during lesson
+      ws.receiveJSON({ type: "barge_in" });
+
+      // LLM responds with a short ack + RESUME marker
+      (mockLLM.streamSpeechResponse as ReturnType<typeof vi.fn>).mockImplementationOnce(function (
+        this: MockLLM,
+        _transcript: string,
+        _history: unknown,
+        callbacks: LLMStreamCallbacks,
+        _gradeLevel?: number,
+        lessonContext?: { currentIdx: number; total: number; upcoming: unknown[] },
+      ) {
+        this._streamCb = callbacks;
+        // Verify lessonContext is passed
+        expect(lessonContext).toBeDefined();
+        expect(lessonContext!.total).toBe(lessonItems.length);
+        queueMicrotask(() => {
+          const text = "Tamam, devam ediyoruz.\n---RESUME---";
+          callbacks.onToken("Tamam, devam ediyoruz.", "Tamam, devam ediyoruz.");
+          callbacks.onToken("\n---RESUME---", "Tamam, devam ediyoruz.\n---RESUME---");
+          callbacks.onDone(text);
+        });
+        return { abort: this._abortFn };
+      });
+
+      mockSTT._startCb!.onTranscript("atla", true);
+      await vi.waitFor(() => expect(mockTTS.openStream).toHaveBeenCalledTimes(initialOpenStreamCount + 1));
+
+      // Q&A TTS ends → triggers instant resume path
+      const qaStreamCb = mockTTS._openStreamCalls[initialOpenStreamCount];
+      qaStreamCb.onEnd();
+
+      // A new TTS stream is opened for resumeLesson (no overlay-dismiss wait)
+      await vi.waitFor(() => {
+        expect(mockTTS._openStreamCalls.length).toBe(initialOpenStreamCount + 2);
+      });
+
+      // qa_board_clear was sent as part of instant resume
+      expect(ws.sentOfType("qa_board_clear").length).toBeGreaterThanOrEqual(1);
+
+      // The Q&A speech transcript does NOT include the marker
+      const finalTranscripts = ws.sentOfType("transcript").filter((t: { isFinal: boolean }) => t.isFinal);
+      expect(finalTranscripts.some((t: { text: string }) => t.text.includes("RESUME"))).toBe(false);
+      expect(finalTranscripts.some((t: { text: string }) => t.text.includes("devam ediyoruz"))).toBe(true);
+
+      // TTS received the stripped speech text (no marker)
+      const allFed = mockTTS._feedCalls.map((c) => c.text).join(" ");
+      expect(allFed).not.toContain("RESUME");
+    });
+
+    it("honors ---RESUME:<index>--- target (jumps to specific step)", async () => {
+      await startLesson();
+      const initialOpenStreamCount = mockTTS._openStreamCalls.length;
+
+      ws.receiveJSON({ type: "barge_in" });
+
+      (mockLLM.streamSpeechResponse as ReturnType<typeof vi.fn>).mockImplementationOnce(function (
+        this: MockLLM,
+        _transcript: string,
+        _history: unknown,
+        callbacks: LLMStreamCallbacks,
+      ) {
+        this._streamCb = callbacks;
+        queueMicrotask(() => {
+          const text = "Tamam, üçüncü konuya geçelim. ---RESUME:3---";
+          callbacks.onToken(text, text);
+          callbacks.onDone(text);
+        });
+        return { abort: this._abortFn };
+      });
+
+      mockSTT._startCb!.onTranscript("üçüncü konuya geçelim", true);
+      await vi.waitFor(() => expect(mockTTS.openStream).toHaveBeenCalledTimes(initialOpenStreamCount + 1));
+
+      const qaStreamCb = mockTTS._openStreamCalls[initialOpenStreamCount];
+      qaStreamCb.onEnd();
+
+      // Resume TTS stream opened
+      await vi.waitFor(() => {
+        expect(mockTTS._openStreamCalls.length).toBe(initialOpenStreamCount + 2);
+      });
+
+      // board_reveal for index 3 (the targeted step) should have been sent after resume
+      const reveals = ws.sentOfType("board_reveal").map((m: { index: number }) => m.index);
+      expect(reveals).toContain(3);
+    });
+
+    it("clamps out-of-bounds RESUME target index", async () => {
+      await startLesson();
+      const initialOpenStreamCount = mockTTS._openStreamCalls.length;
+
+      ws.receiveJSON({ type: "barge_in" });
+
+      (mockLLM.streamSpeechResponse as ReturnType<typeof vi.fn>).mockImplementationOnce(function (
+        this: MockLLM,
+        _transcript: string,
+        _history: unknown,
+        callbacks: LLMStreamCallbacks,
+      ) {
+        this._streamCb = callbacks;
+        queueMicrotask(() => {
+          const text = "Atlıyorum. ---RESUME:999---";
+          callbacks.onToken(text, text);
+          callbacks.onDone(text);
+        });
+        return { abort: this._abortFn };
+      });
+
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      mockSTT._startCb!.onTranscript("atla", true);
+      await vi.waitFor(() => expect(mockTTS.openStream).toHaveBeenCalledTimes(initialOpenStreamCount + 1));
+
+      const qaStreamCb = mockTTS._openStreamCalls[initialOpenStreamCount];
+      qaStreamCb.onEnd();
+
+      await vi.waitFor(() => {
+        expect(mockTTS._openStreamCalls.length).toBe(initialOpenStreamCount + 2);
+      });
+
+      // Clamp warning logged
+      expect(warnSpy.mock.calls.some((c) => String(c[0]).includes("clamped"))).toBe(true);
+      warnSpy.mockRestore();
     });
   });
 
