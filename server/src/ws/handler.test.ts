@@ -1060,6 +1060,60 @@ describe("handleConnection", () => {
     });
   });
 
+  // ── End-of-lesson barge-in recovery ──
+
+  describe("end-of-lesson barge-in recovery", () => {
+    it("replays last speech on barge-in at end of lesson (clamp)", async () => {
+      // Single-item lesson: after startLesson, lastRevealedIdx = 0 (final speech)
+      const lessonItems = [
+        { type: "text", text: "Son", speech: "Son söz." },
+      ];
+      (mockLLM.generateLesson as ReturnType<typeof vi.fn>).mockResolvedValueOnce(lessonItems);
+      ws.receiveJSON({ type: "generate_lesson", topic: "test" });
+      await vi.waitFor(() => expect(mockTTS.openStream).toHaveBeenCalled());
+
+      const initialOpenStreamCount = mockTTS._openStreamCalls.length;
+
+      // Cough at the end of the final paragraph → barge-in fires
+      ws.receiveJSON({ type: "barge_in" });
+
+      // Auto-resume timer (ms=0 in test mode) fires → resumeLesson(1) → clamp → resumeLesson(0) → replay
+      await vi.waitFor(() => {
+        expect(mockTTS._openStreamCalls.length).toBe(initialOpenStreamCount + 1);
+      });
+
+      // The replay stream should have been fed the final speech text
+      const allFed = mockTTS._feedCalls.map((c) => c.text).join(" ");
+      expect(allFed).toContain("Son söz.");
+    });
+
+    it("sends tts_end when lesson is finalized via resumeLesson safety net", async () => {
+      // Lesson with all-empty speeches → after barge-in clamp + safety net fires.
+      // (text="" so the text fallback in startNarration also yields empty.)
+      const lessonItems = [
+        { type: "text", text: "", speech: "" },
+      ];
+      (mockLLM.generateLesson as ReturnType<typeof vi.fn>).mockResolvedValueOnce(lessonItems);
+      ws.receiveJSON({ type: "generate_lesson", topic: "test" });
+      await vi.waitFor(() => expect(mockTTS.openStream).toHaveBeenCalled());
+
+      const ttsEndsBefore = ws.sentOfType("tts_end").length;
+
+      // Barge-in → auto-resume timer → resumeLesson(1) → remaining=[""] → safety net
+      ws.receiveJSON({ type: "barge_in" });
+
+      await vi.waitFor(() => {
+        expect(ws.sentOfType("tts_end").length).toBeGreaterThan(ttsEndsBefore);
+      });
+
+      // Final state should be back in listening
+      expect(ws.sentOfType("state_change").at(-1)).toEqual({
+        type: "state_change",
+        state: "listening",
+      });
+    });
+  });
+
   // ── RESUME marker (skip intent) ──
 
   describe("---RESUME--- marker", () => {

@@ -804,9 +804,27 @@ export function handleConnection(ws: WebSocket): void {
   // The flow is: Q&A onEnd → state_change:speaking → tts_chunks directly.
   /** Resume lesson narration from a given speech index after a barge-in Q&A. */
   async function resumeLesson(fromIdx: number) {
+    // Fix B: Past-end input → clamp to last speech (replay last paragraph).
+    // This handles the case where barge-in fires while the final speech is playing
+    // (lastRevealedIdx is already at N-1, so startLessonResumeTimer requests N).
+    if (lessonSpeeches.length > 0 && fromIdx >= lessonSpeeches.length) {
+      console.log(
+        `[handler] resumeLesson past-end fromIdx=${fromIdx}, clamping to ${lessonSpeeches.length - 1} (replay last)`,
+      );
+      fromIdx = lessonSpeeches.length - 1;
+    }
+
     const remaining = lessonSpeeches.slice(fromIdx);
     if (remaining.every((s) => !s)) {
+      // Fix A: Lesson effectively complete — reveal any remaining items and
+      // send the terminal tts_end signal so the client doesn't hang.
+      while (lastRevealedIdx < lessonSpeeches.length - 1) {
+        lastRevealedIdx++;
+        const action = revealActions[lastRevealedIdx];
+        if (action) sendRevealAction(action);
+      }
       isLessonNarrating = false;
+      send({ type: "tts_end" });
       session.transition("listening");
       suppressTranscriptsUntil = performance.now() + ttsEndSuppressMs;
       pendingAudio.length = 0;
