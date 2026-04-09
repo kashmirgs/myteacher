@@ -824,6 +824,7 @@ export function handleConnection(ws: WebSocket): void {
         if (action) sendRevealAction(action);
       }
       isLessonNarrating = false;
+      history.markLessonEnded();
       send({ type: "tts_end" });
       session.transition("listening");
       suppressTranscriptsUntil = performance.now() + ttsEndSuppressMs;
@@ -1008,6 +1009,7 @@ export function handleConnection(ws: WebSocket): void {
           }
           console.log(`[handler] resumed lesson TTS ended, lesson narration complete`);
           isLessonNarrating = false;
+          history.markLessonEnded();
           send({ type: "tts_end" });
           session.transition("listening");
           suppressTranscriptsUntil = performance.now() + ttsEndSuppressMs;
@@ -1036,6 +1038,7 @@ export function handleConnection(ws: WebSocket): void {
           }
           console.log(`[handler] resumed lesson TTS ended, lesson narration complete`);
           isLessonNarrating = false;
+          history.markLessonEnded();
           send({ type: "tts_end" });
           session.transition("listening");
           suppressTranscriptsUntil = performance.now() + ttsEndSuppressMs;
@@ -1238,6 +1241,7 @@ export function handleConnection(ws: WebSocket): void {
             nextRevealIdx++;
           }
           isLessonNarrating = false;
+          history.markLessonEnded();
           send({ type: "tts_end" });
           session.transition("listening");
           suppressTranscriptsUntil = performance.now() + ttsEndSuppressMs;
@@ -1264,6 +1268,7 @@ export function handleConnection(ws: WebSocket): void {
             revealCheckInterval = null;
           }
           isLessonNarrating = false;
+          history.markLessonEnded();
           send({ type: "tts_end" });
           session.transition("listening");
           suppressTranscriptsUntil = performance.now() + ttsEndSuppressMs;

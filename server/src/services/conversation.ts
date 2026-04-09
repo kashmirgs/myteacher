@@ -45,6 +45,11 @@ export class ConversationHistory {
     this.trim();
   }
 
+  markLessonEnded(): void {
+    this.entries.push({ role: 'system-event', content: '[Ders bitti]' });
+    this.trim();
+  }
+
   /** Format for Claude API: user/assistant alternation, system-events folded into adjacent user messages */
   getMessagesForClaude(): { role: 'user' | 'assistant'; content: string }[] {
     const messages: { role: 'user' | 'assistant'; content: string }[] = [];
